@@ -1,0 +1,58 @@
+name: Gerar APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Copiar o site para o projeto Android
+        run: npx cap sync android
+
+      - name: Compilar o APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon \
+            -PappVersionCode=${{ github.run_number }} \
+            -PappVersionName=1.0.${{ github.run_number }}
+          cp app/build/outputs/apk/release/app-release.apk ../progressao-senior.apk
+
+      - name: Guardar o APK nesta execução
+        uses: actions/upload-artifact@v4
+        with:
+          name: progressao-senior-apk
+          path: progressao-senior.apk
+
+      - name: Publicar o APK em Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Progressão Sênior 1.0.${{ github.run_number }}
+          body: |
+            Baixe o arquivo **progressao-senior.apk** abaixo pelo celular Android e abra para instalar.
+            Se o Android pedir, permita "instalar apps de fontes desconhecidas" para o navegador ou gerenciador de arquivos.
+          files: progressao-senior.apk
+          make_latest: true

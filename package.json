@@ -1,0 +1,23 @@
+{
+  "name": "progressao-senior",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Progressão Ramo Sênior — app Android (Capacitor) do checklist de progressão pessoal",
+  "scripts": {
+    "sync": "cap sync android",
+    "build:apk": "cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.6.10",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/core": "^7.6.10",
+    "@capacitor/filesystem": "^7.1.9",
+    "@capacitor/share": "^7.0.4"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^4.0.0",
+    "@capacitor/cli": "^7.6.10",
+    "@supabase/supabase-js": "^2.118.0",
+    "jspdf": "^2.5.1"
+  }
+}

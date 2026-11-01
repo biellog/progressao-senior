@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://a89061044aleatorio-lab.github.io/Progressao-senior/sitemap.xml
