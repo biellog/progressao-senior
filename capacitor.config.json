@@ -1,9 +1,9 @@
 {
   "appId": "br.progressaosenior.app",
   "appName": "Progressão Sênior",
-  "webDir": "www",
+  "webDir": "dist/app",
   "android": {
     "adjustMarginsForEdgeToEdge": "auto",
-    "backgroundColor": "#1C1113"
+    "backgroundColor": "#150C0E"
   }
 }

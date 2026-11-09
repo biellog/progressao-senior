@@ -1,22 +1,34 @@
 name: Manter Supabase ativo
 
+# Projetos gratuitos do Supabase pausam depois de 7 dias sem uso.
+# Este workflow faz uma consulta leve duas vezes por semana.
+# Usa o mesmo endereço e chave de supabase/config.json.
 on:
   schedule:
-    # Roda toda segunda e quinta às 09:00 UTC (06:00 no horário de Brasília)
+    # Toda segunda e quinta às 09:00 UTC (06:00 no horário de Brasília)
     - cron: '0 9 * * 1,4'
   workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
   ping-supabase:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Consultar o banco para evitar pausa por inatividade
         run: |
-          curl --fail --silent --show-error \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
-            "https://kinflfbkajhthfpfkkfs.supabase.co/rest/v1/senior_progress?select=item_id&limit=1"
+          URL=$(jq -r '.url // ""' supabase/config.json | sed 's#/*$##')
+          KEY=$(jq -r '.anonKey // ""' supabase/config.json)
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then
+            echo "Supabase ainda não configurado em supabase/config.json — nada a fazer."
+            exit 0
+          fi
+          curl --fail --silent --show-error -X POST \
+            -H "apikey: ${KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"p_code":"PING"}' \
+            "${URL}/rest/v1/rpc/check_patrol_code"
           echo ""
           echo "Ping enviado com sucesso em $(date -u)."
-        env:
-          SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpbmZsZmJrYWpodGhmcGZra2ZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM1MTc0OTQsImV4cCI6MjA3OTA5MzQ5NH0.CnFOQ-ChbgFsDi4wDjptika-DRoTTNcVRtlFGcNP8zM

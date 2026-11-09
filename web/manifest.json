@@ -1,12 +1,13 @@
 {
   "name": "Progressão Ramo Sênior",
   "short_name": "Progressão Sênior",
-  "description": "Checklist de progressão pessoal do Ramo Sênior",
+  "description": "Checklist de progressão pessoal do Ramo Sênior, com a sua patrulha",
+  "lang": "pt-BR",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#1C1113",
-  "theme_color": "#1C1113",
+  "background_color": "#150C0E",
+  "theme_color": "#150C0E",
   "orientation": "portrait",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },

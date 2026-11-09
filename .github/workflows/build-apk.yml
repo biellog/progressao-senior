@@ -1,16 +1,34 @@
-name: Gerar APK
+name: App Android (APK)
 
+# Gera o APK a partir de src/ (código compartilhado) + android/.
+# Mudanças só na versão web (pasta web/) não disparam este build.
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'android/**'
+      - 'supabase/config.json'
+      - 'scripts/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      PUBLIC_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      APP_VERSION: 2.0.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +46,10 @@ jobs:
       - name: Instalar dependências
         run: npm ci
 
-      - name: Copiar o site para o projeto Android
+      - name: Montar a versão do app
+        run: node scripts/build.mjs app
+
+      - name: Copiar para o projeto Android
         run: npx cap sync android
 
       - name: Compilar o APK
@@ -37,7 +58,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon \
             -PappVersionCode=${{ github.run_number }} \
-            -PappVersionName=1.0.${{ github.run_number }}
+            -PappVersionName=${{ env.APP_VERSION }}
           cp app/build/outputs/apk/release/app-release.apk ../progressao-senior.apk
 
       - name: Guardar o APK nesta execução
@@ -49,10 +70,11 @@ jobs:
       - name: Publicar o APK em Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: Progressão Sênior 1.0.${{ github.run_number }}
+          tag_name: v${{ env.APP_VERSION }}
+          name: Progressão Sênior ${{ env.APP_VERSION }} (app Android)
           body: |
             Baixe o arquivo **progressao-senior.apk** abaixo pelo celular Android e abra para instalar.
             Se o Android pedir, permita "instalar apps de fontes desconhecidas" para o navegador ou gerenciador de arquivos.
+            Versão web: ${{ env.PUBLIC_SITE_URL }}
           files: progressao-senior.apk
           make_latest: true
