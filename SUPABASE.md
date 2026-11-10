@@ -2,12 +2,21 @@
 
 Siga estes passos uma vez. Depois disso, o app e o site passam a usar o banco novo sozinhos.
 
+> **Já tinha rodado o `schema.sql` antes?** Rode o arquivo inteiro de novo (passo 1). Ele não apaga nada e
+> acrescenta o que faltava: os envios de especialidades e insígnias com relatório, o armazenamento dos
+> arquivos (bucket `relatorios`) e os avisos em tempo real para o monitor.
+
 ## 1. Criar o banco
 
 1. Entre em https://supabase.com/dashboard e abra o projeto (ou crie um novo).
 2. No menu da esquerda, abra **SQL Editor** → **New query**.
 3. Copie **todo** o conteúdo do arquivo [`supabase/schema.sql`](supabase/schema.sql), cole e clique em **Run**.
    Deve aparecer "Success. No rows returned". Pode rodar de novo sem problema.
+
+Confira depois de rodar:
+
+- **Storage:** deve aparecer o bucket **relatorios** (privado). É onde ficam os PDFs e fotos dos relatórios.
+- **Database → Publications → supabase_realtime:** a tabela **submissions** deve estar marcada. É ela que avisa o monitor na hora.
 
 ## 2. Criar as patrulhas
 
@@ -75,12 +84,26 @@ A chave pública pode ficar visível no repositório: quem protege os dados são
 
 | O que | Onde |
 |---|---|
+| Enviar especialidade ou insígnia | Aba **Especialidades** ou **Insígnias** → toque no item → anexe o relatório → **Enviar para o monitor** |
+| Analisar envios (monitor) | Aba **Patrulha** → **Para analisar** → abra o envio → **Aprovar** ou **Devolver** (com comentário) |
+| Receber avisos no aparelho | **Minha conta** → **Ativar avisos** (ou o aviso amarelo no painel do monitor) |
 | Convidar alguém | Painel do monitor → **Compartilhar** (envia o código pelo WhatsApp) |
 | Código vazou | Painel do monitor → **Gerar novo código** (quem já entrou continua) |
 | Tirar alguém da patrulha | Painel do monitor → toque no nome → **Remover da patrulha** |
 | Mudar de patrulha | Minha conta (botão com seu nome) → **Trocar de patrulha** |
 | Renomear patrulha | SQL Editor: `update public.patrols set name = 'Novo nome' where name = 'Lobo';` |
 | Apagar uma patrulha | SQL Editor: `delete from public.patrols where name = 'Lobo';` (os membros ficam sem patrulha e precisam de um código novo) |
+
+## Espaço dos arquivos
+
+O plano gratuito do Supabase tem 1 GB de armazenamento. Fotos grandes já são reduzidas antes do envio, e cada arquivo pode ter até 15 MB.
+Para ver quanto já foi usado, abra **Storage** no painel.
+
+## Avisos
+
+- **Com o app ou o site abertos** (inclusive em segundo plano por pouco tempo), o monitor recebe o aviso na hora em que alguém envia, e o membro recebe quando o monitor aprova ou devolve.
+- **Ao abrir o app** depois de um tempo fechado, aparece um aviso com o que chegou enquanto isso, e o número de pendentes fica na aba **Patrulha**.
+- Avisos com o app **totalmente fechado** (push) precisam de uma conta no Firebase e ainda não estão configurados.
 
 ## Projeto parado
 

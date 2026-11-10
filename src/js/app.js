@@ -27,6 +27,8 @@ const SPEC_STORAGE_KEY = 'especialidades-senior-v1';
 const NOTES_STORAGE_KEY = 'notas-senior-v1';
 const DELETED_NOTES_KEY = 'notas-apagadas-senior-v1';
 const PROFILE_KEY = 'perfil-senior-v1';
+const SUBS_KEY = 'envios-senior-v1';
+const NOTIF_KEY = 'avisos-senior-v1';
 const LEGACY_KEYS = [STORAGE_KEY, SPEC_STORAGE_KEY, NOTES_STORAGE_KEY];
 
 function storeKey(base){ return base + ':' + (currentUser ? currentUser.id : 'anon'); }
@@ -50,14 +52,15 @@ function adoptLegacyData(){
   });
 }
 function clearLocalForUser(){
-  [STORAGE_KEY, SPEC_STORAGE_KEY, NOTES_STORAGE_KEY, DELETED_NOTES_KEY, PROFILE_KEY].forEach(k=>{
+  [STORAGE_KEY, SPEC_STORAGE_KEY, NOTES_STORAGE_KEY, DELETED_NOTES_KEY, PROFILE_KEY, SUBS_KEY, NOTIF_KEY].forEach(k=>{
     try{ localStorage.removeItem(storeKey(k)); }catch(err){}
   });
 }
 
 // ---------- Estado ----------
 let progress = {};       // { itemId: { checked, date: "YYYY-MM-DD", u: timestamp } }
-let specProgress = {};   // { itemId: { checked, date, notes, u } }
+let specProgress = {};   // { itemId: { notes, u } } — anotação dos requisitos
+let subs = { especialidade:{}, insignia:{} }; // envios com relatório, por tipo e item
 let notes = [];          // [{ id, title, body, updated }]
 let specNotesOpen = {};
 let notesSaveTimers = {};
@@ -192,14 +195,7 @@ function allItemIds(){
   }));
   return ids;
 }
-function allSpecIds(){
-  const ids = [];
-  SPECIALTIES.forEach(area=>{
-    area.especialidades.forEach(i=>ids.push(i.id));
-    area.insignias.forEach(i=>ids.push(i.id));
-  });
-  return ids;
-}
+
 
 let _textMap = null;
 function itemTextMap(){
@@ -209,7 +205,8 @@ function itemTextMap(){
     [...(b.items||[]), ...(b.fixas||[]), ...(b.variaveis||[])].forEach(i=>m[i.id]=i.text);
     if(b.ou) m[b.ou.id] = b.ou.text;
   }));
-  SPECIALTIES.forEach(a=>[...a.especialidades, ...a.insignias].forEach(i=>m[i.id]=i.text));
+  SPECIALTIES.forEach(a=> a.especialidades.forEach(i=> m[i.id] = i.text));
+  INSIGNIAS.forEach(a=> a.items.forEach(i=> m[i.id] = i.text));
   _textMap = m;
   return m;
 }
@@ -441,79 +438,129 @@ $('resetBtn').addEventListener('click', async ()=>{
   showToast('Progresso apagado');
 });
 
-// ---------- Especialidades ----------
-function specItemRow(item){
+// ---------- Especialidades e Insígnias (envio com relatório) ----------
+// Para marcar, a pessoa envia o relatório (PDF, fotos, outros arquivos).
+// O envio fica "enviada" até o monitor aprovar ou devolver.
+const KINDS = {
+  especialidade: { label:'Especialidade', plural:'especialidades', content:'specContent', count:'specFracLabel', pending:'specPendingLabel', search:'searchCountEspecialidades' },
+  insignia:      { label:'Insígnia', plural:'insígnias', content:'insigContent', count:'insigFracLabel', pending:'insigPendingLabel', search:'searchCountInsignias' }
+};
+const STATUS_INFO = {
+  enviada:   { chip:'⏳ Aguardando o monitor', cls:'pending' },
+  aprovada:  { chip:'✓ Aprovada', cls:'ok' },
+  devolvida: { chip:'↩ Devolvida: ajustar', cls:'back' }
+};
+const MAX_FILES = 10;
+const MAX_FILE_BYTES = 15 * 1024 * 1024;
+const BUCKET = 'relatorios';
+let searchQueryInsignias = '';
+
+function catalogAreas(kind){
+  return kind === 'insignia'
+    ? INSIGNIAS
+    : SPECIALTIES.map(a=> ({ id:a.id, name:a.name, items:a.especialidades }));
+}
+function allIdsOf(kind){ return catalogAreas(kind).flatMap(a=> a.items.map(i=> i.id)); }
+function subOf(kind, id, s = subs){ return (s[kind] || {})[id] || null; }
+function isApproved(kind, id, s = subs){ const x = subOf(kind, id, s); return !!(x && x.status === 'aprovada'); }
+function approvedCount(kind, s = subs){ return allIdsOf(kind).filter(id=> isApproved(kind, id, s)).length; }
+function pendingCountOf(kind, s = subs){ return allIdsOf(kind).filter(id=> { const x = subOf(kind, id, s); return x && x.status === 'enviada'; }).length; }
+function searchQueryOf(kind){ return kind === 'insignia' ? searchQueryInsignias : searchQueryEspecialidades; }
+
+const HOURGLASS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12M6 21h12M7 3c0 5 10 5 10 9s-10 4-10 9M17 3c0 5-10 5-10 9"/></svg>';
+const BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>';
+
+function catalogItemRow(kind, item){
+  const sub = subOf(kind, item.id);
+  const st = sub ? STATUS_INFO[sub.status] : null;
   const p = specProgress[item.id] || {};
-  const checked = !!p.checked;
   const notesTxt = p.notes || '';
   const notesOpen = !!specNotesOpen[item.id];
+  const icon = !sub ? '' : sub.status === 'aprovada' ? CHECK_SVG : sub.status === 'enviada' ? HOURGLASS_SVG : BACK_SVG;
+  const nFiles = sub ? (sub.files || []).length : 0;
+  let chip;
+  if(!sub) chip = `<button class="sub-send-btn" data-action="sub-open" data-kind="${kind}" data-id="${item.id}">📎 Enviar relatório</button>`;
+  else chip = `<button class="sub-chip sub-${st.cls}" data-action="sub-open" data-kind="${kind}" data-id="${item.id}" title="${nFiles} arquivo${nFiles!==1?'s':''}">${st.chip}${sub.status === 'aprovada' && sub.item_date ? ' · ' + fmtDate(sub.item_date) : ''}</button>`;
   return `
-    <div class="item ${checked?'checked':''}" data-id="${item.id}">
-      <div class="chk" data-action="spec-toggle" data-id="${item.id}" role="checkbox" aria-checked="${checked}" tabindex="0">${CHECK_SVG}</div>
+    <div class="item ${sub && sub.status==='aprovada' ? 'checked' : ''}" data-id="${item.id}">
+      <div class="chk ${st ? 'chk-' + st.cls : ''}" data-action="sub-open" data-kind="${kind}" data-id="${item.id}" role="button" tabindex="0" aria-label="Enviar ou ver relatório">${icon}</div>
       <div class="item-body">
         <div class="item-text-row">
-          <div class="item-text" data-action="spec-toggle" data-id="${item.id}">${highlightText(item.text, searchQueryEspecialidades)}</div>
+          <div class="item-text" data-action="sub-open" data-kind="${kind}" data-id="${item.id}">${highlightText(item.text, searchQueryOf(kind))}</div>
           <a class="spec-link" href="${SPEC_GUIDE_URL}" target="_blank" rel="noopener noreferrer">Ver requisitos ↗</a>
         </div>
         <div class="item-date">
-          <input type="date" value="${p.date || ''}" data-action="spec-date" data-id="${item.id}" aria-label="Data">
-          <button class="notes-toggle-btn" data-action="notes-toggle" data-id="${item.id}">${notesOpen ? 'Fechar anotação' : (notesTxt ? '📝 Ver/editar requisitos' : '📝 Adicionar requisitos')}</button>
+          ${chip}
+          <button class="notes-toggle-btn" data-action="notes-toggle" data-id="${item.id}">${notesOpen ? 'Fechar anotação' : (notesTxt ? '📝 Requisitos' : '📝 Anotar requisitos')}</button>
         </div>
+        ${sub && sub.status === 'devolvida' && sub.review_note ? `<div class="review-note">💬 ${escapeHtml(sub.review_note)}</div>` : ''}
         ${notesOpen ? `
         <div class="notes-box">
-          <textarea class="notes-textarea" data-action="notes-input" data-id="${item.id}" placeholder="Cole ou escreva aqui os requisitos desta especialidade, do jeito que você consultou no guia oficial.">${escapeHtml(notesTxt)}</textarea>
+          <textarea class="notes-textarea" data-action="notes-input" data-id="${item.id}" placeholder="Cole ou escreva aqui os requisitos, do jeito que você consultou no guia oficial.">${escapeHtml(notesTxt)}</textarea>
         </div>` : (notesTxt ? `<div class="notes-preview" data-action="notes-toggle" data-id="${item.id}">${escapeHtml(notesTxt.length>140 ? notesTxt.slice(0,140)+'…' : notesTxt)}</div>` : '')}
       </div>
     </div>`;
 }
 
-function renderSpecialidades(){
-  const content = $('specContent');
+function renderCatalog(kind){
+  const k = KINDS[kind];
+  const content = $(k.content);
   content.classList.remove('loading');
-  content.innerHTML = SPECIALTIES.map(area=>{
-    let html = `<div class="spec-area"><div class="spec-area-title">${area.name}</div>`;
-    if(area.especialidades.length){
-      html += '<div class="spec-sub-label">Especialidades</div>';
-      html += area.especialidades.map(specItemRow).join('');
-    }
-    if(area.insignias.length){
-      html += '<div class="spec-sub-label">Insígnias</div>';
-      html += area.insignias.map(specItemRow).join('');
-    }
-    return html + '</div>';
-  }).join('');
-  const ids = allSpecIds();
-  $('specFracLabel').textContent = ids.filter(id=> isDone(specProgress, id)).length + ' / ' + ids.length;
-  applySpecSearch();
+  content.innerHTML = catalogAreas(kind).map(area=>
+    `<div class="spec-area"><div class="spec-area-title">${area.name}</div>${area.items.map(i=> catalogItemRow(kind, i)).join('')}</div>`
+  ).join('');
+  const total = allIdsOf(kind).length;
+  $(k.count).textContent = approvedCount(kind) + ' / ' + total;
+  const pend = pendingCountOf(kind);
+  $(k.pending).textContent = pend ? '· ' + pend + ' aguardando o monitor' : '';
+  applyCatalogSearch(kind);
+}
+function renderSpecialidades(){ renderCatalog('especialidade'); renderCatalog('insignia'); }
+
+function applyCatalogSearch(kind){
+  const k = KINDS[kind];
+  const content = $(k.content);
+  const q = searchQueryOf(kind);
+  let shown = 0;
+  content.querySelectorAll('.item').forEach(el=>{
+    const textEl = el.querySelector('.item-text');
+    const match = !q || normalizeText(textEl ? textEl.textContent : '').includes(q);
+    el.classList.toggle('search-hide', !match);
+    if(match) shown++;
+  });
+  content.querySelectorAll('.spec-area').forEach(a=>{
+    a.classList.toggle('search-hide', !!q && !a.querySelector('.item:not(.search-hide)'));
+  });
+  $(k.search).textContent = q ? (shown + ' encontrada' + (shown!==1?'s':'')) : '';
 }
 
-$('specContent').addEventListener('click', (e)=>{
-  const el = e.target.closest('[data-action]');
-  if(!el) return;
-  const action = el.getAttribute('data-action');
-  const id = el.getAttribute('data-id');
-  if(action === 'spec-toggle') specToggle(id);
-  else if(action === 'notes-toggle'){
-    specNotesOpen[id] = !specNotesOpen[id];
-    renderSpecialidades();
-    if(specNotesOpen[id]){
-      const ta = document.querySelector('.notes-textarea[data-id="'+id+'"]');
-      if(ta) ta.focus();
+['especialidade','insignia'].forEach(kind=>{
+  const content = $(KINDS[kind].content);
+  content.addEventListener('click', (e)=>{
+    const el = e.target.closest('[data-action]');
+    if(!el) return;
+    const action = el.getAttribute('data-action');
+    const id = el.getAttribute('data-id');
+    if(action === 'sub-open') openSubmission(kind, id);
+    else if(action === 'notes-toggle'){
+      specNotesOpen[id] = !specNotesOpen[id];
+      renderCatalog(kind);
+      if(specNotesOpen[id]){
+        const ta = content.querySelector('.notes-textarea[data-id="'+id+'"]');
+        if(ta) ta.focus();
+      }
     }
-  }
-});
-$('specContent').addEventListener('change', (e)=>{
-  const el = e.target;
-  if(el.getAttribute('data-action') === 'spec-date') specSetDate(el.getAttribute('data-id'), el.value);
-});
-$('specContent').addEventListener('input', (e)=>{
-  const el = e.target;
-  if(el.getAttribute('data-action') === 'notes-input') specSetNotes(el.getAttribute('data-id'), el.value);
-});
-$('specContent').addEventListener('keydown', (e)=>{
-  if((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('chk')){ e.preventDefault(); e.target.click(); }
+  });
+  content.addEventListener('input', (e)=>{
+    const el = e.target;
+    if(el.getAttribute('data-action') === 'notes-input') specSetNotes(el.getAttribute('data-id'), el.value);
+  });
+  content.addEventListener('keydown', (e)=>{
+    if((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('chk')){ e.preventDefault(); e.target.click(); }
+  });
 });
 
+// Anotação dos requisitos (só para quem anota; fica em senior_progress)
 function specSetNotes(id, value){
   const cur = specProgress[id] || {};
   cur.notes = value;
@@ -525,60 +572,226 @@ function specSetNotes(id, value){
     upsertCloud('especialidade', id, cur);
   }, 600);
 }
-
-function applySpecSearch(){
-  const content = $('specContent');
-  const countEl = $('searchCountEspecialidades');
-  const q = searchQueryEspecialidades;
-  let shown = 0;
-  content.querySelectorAll('.item').forEach(el=>{
-    const textEl = el.querySelector('.item-text');
-    const match = !q || normalizeText(textEl ? textEl.textContent : '').includes(q);
-    el.classList.toggle('search-hide', !match);
-    if(match) shown++;
-  });
-  content.querySelectorAll('.spec-area').forEach(a=>{
-    a.classList.toggle('search-hide', !!q && !a.querySelector('.item:not(.search-hide)'));
-  });
-  if(countEl) countEl.textContent = q ? (shown + ' encontrada' + (shown!==1?'s':'')) : '';
-}
-
-function specToggle(id){
-  const cur = specProgress[id] || {};
-  cur.checked = !cur.checked;
-  if(cur.checked && !cur.date) cur.date = today();
-  cur.u = Date.now();
-  specProgress[id] = cur;
-  specSave();
-  upsertCloud('especialidade', id, cur);
-  renderSpecialidades();
-  updateHeader();
-}
-
-function specSetDate(id, value){
-  const cur = specProgress[id] || {};
-  cur.date = value;
-  cur.u = Date.now();
-  specProgress[id] = cur;
-  specSave();
-  upsertCloud('especialidade', id, cur);
-}
-
 function specSave(){ writeJSON(SPEC_STORAGE_KEY, specProgress); }
+function subsSave(){ writeJSON(SUBS_KEY, subs); }
 
-$('specResetBtn').addEventListener('click', async ()=>{
-  if(!confirm('Isso vai apagar todas as especialidades marcadas, inclusive da nuvem. Tem certeza?')) return;
-  specProgress = {};
-  specSave();
-  renderSpecialidades();
-  await deleteCloudKind('especialidade');
-  showToast('Especialidades apagadas');
+// ---------- Enviar relatório ----------
+let subDraft = null; // { kind, id, keep:[arquivos já enviados], add:[File], editing }
+
+function fmtBytes(n){
+  if(!n && n !== 0) return '';
+  if(n < 1024) return n + ' B';
+  if(n < 1024*1024) return Math.round(n/1024) + ' KB';
+  return (n/1024/1024).toFixed(1).replace('.', ',') + ' MB';
+}
+function fileIcon(type, name){
+  const t = (type || '') + ' ' + (name || '').toLowerCase();
+  if(/image|\.jpe?g|\.png|\.webp|\.heic/.test(t)) return '🖼️';
+  if(/pdf/.test(t)) return '📄';
+  if(/video|\.mp4|\.mov/.test(t)) return '🎬';
+  if(/audio|\.mp3|\.m4a|\.ogg/.test(t)) return '🎧';
+  return '📎';
+}
+function safeFileName(name){
+  const dot = name.lastIndexOf('.');
+  const base = (dot > 0 ? name.slice(0, dot) : name).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 60) || 'arquivo';
+  const ext = (dot > 0 ? name.slice(dot + 1) : '').replace(/[^A-Za-z0-9]/g, '').slice(0, 8).toLowerCase();
+  return ext ? base + '.' + ext : base;
+}
+
+// Fotos grandes são reduzidas antes de enviar (economiza internet e espaço no Supabase)
+async function shrinkImage(file){
+  if(!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size < 1.2 * 1024 * 1024) return file;
+  try{
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1920 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(r=> canvas.toBlob(r, 'image/jpeg', 0.85));
+    if(!blob || blob.size >= file.size) return file;
+    return new File([blob], file.name.replace(/\.(png|webp|jpe?g)$/i, '') + '.jpg', { type:'image/jpeg' });
+  }catch(err){ return file; }
+}
+
+function itemName(kind, id){ return itemTextMap()[id] || id; }
+
+function openSubmission(kind, id){
+  const sub = subOf(kind, id);
+  subDraft = { kind, id, keep: sub ? (sub.files || []).slice() : [], add: [], editing: !sub || sub.status === 'devolvida' };
+  $('subKind').textContent = KINDS[kind].label;
+  $('subTitle').textContent = itemName(kind, id);
+  $('subDate').value = (sub && sub.item_date) || today();
+  $('subReport').value = (sub && sub.report) || '';
+  $('subFiles').value = '';
+  setMsgEl('subMsg', '');
+  $('subCancel').textContent = 'Cancelar envio';
+  renderSubmission();
+  openModal('subModal');
+  $('subModal').querySelector('.modal-box').scrollTop = 0;
+}
+
+function renderSubmission(){
+  const d = subDraft;
+  if(!d) return;
+  const sub = subOf(d.kind, d.id);
+  let status = '';
+  if(sub){
+    const when = sub.submitted_at ? new Date(sub.submitted_at).toLocaleDateString('pt-BR') : '';
+    if(sub.status === 'enviada') status = `<div class="auth-msg auth-msg-info">⏳ Enviado em ${when}. Aguardando o monitor analisar.</div>`;
+    if(sub.status === 'aprovada') status = `<div class="auth-msg auth-msg-ok">✓ Aprovada pelo monitor${sub.reviewed_at ? ' em ' + new Date(sub.reviewed_at).toLocaleDateString('pt-BR') : ''}.${sub.review_note ? '<br>💬 ' + escapeHtml(sub.review_note) : ''}</div>`;
+    if(sub.status === 'devolvida') status = `<div class="auth-msg auth-msg-error">↩ O monitor devolveu este envio.${sub.review_note ? '<br>💬 ' + escapeHtml(sub.review_note) : ''}<br>Ajuste e envie de novo.</div>`;
+  }
+  $('subStatusBox').innerHTML = status;
+  $('subEditBox').hidden = !d.editing;
+  $('subViewBox').hidden = d.editing;
+  $('subEditBtn').hidden = !(sub && sub.status === 'enviada' && !d.editing);
+  $('subCancel').hidden = !(sub && sub.status !== 'aprovada');
+
+  if(d.editing){
+    const rows = [
+      ...d.keep.map((f, i)=> `<div class="file-row"><span class="file-ic">${fileIcon(f.type, f.name)}</span><span class="file-name">${escapeHtml(f.name)}<small>${fmtBytes(f.size)} · já enviado</small></span><button class="file-x" data-keep="${i}" aria-label="Remover">✕</button></div>`),
+      ...d.add.map((f, i)=> `<div class="file-row new"><span class="file-ic">${fileIcon(f.type, f.name)}</span><span class="file-name">${escapeHtml(f.name)}<small>${fmtBytes(f.size)} · novo</small></span><button class="file-x" data-add="${i}" aria-label="Remover">✕</button></div>`)
+    ];
+    $('subFileList').innerHTML = rows.join('') || '<div class="pick-hint">Nenhum arquivo ainda. O relatório é obrigatório.</div>';
+    $('subSend').textContent = sub && sub.status === 'devolvida' ? 'Reenviar para o monitor' : (sub ? 'Salvar e reenviar' : 'Enviar para o monitor');
+  } else {
+    $('subViewBox').innerHTML = (sub && sub.report ? `<div class="field"><label>Comentário</label><div class="report-text">${escapeHtml(sub.report)}</div></div>` : '') +
+      '<div class="field"><label>Arquivos enviados</label>' + filesListHtml(sub ? sub.files : []) + '</div>';
+  }
+}
+
+function filesListHtml(files){
+  if(!files || !files.length) return '<div class="pick-hint">Nenhum arquivo.</div>';
+  return files.map(f=> `<button class="file-row file-open" data-path="${escapeHtml(f.path)}"><span class="file-ic">${fileIcon(f.type, f.name)}</span><span class="file-name">${escapeHtml(f.name)}<small>${fmtBytes(f.size)}</small></span><span class="file-go">Abrir ↗</span></button>`).join('');
+}
+
+// Abre um arquivo do Storage com um link temporário (10 minutos)
+async function openStoredFile(path){
+  try{
+    const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(path, 600);
+    if(error) throw error;
+    const a = document.createElement('a');
+    a.href = data.signedUrl; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  }catch(err){ showToast('Não consegui abrir o arquivo. ' + authErrorPt(err)); }
+}
+document.addEventListener('click', (e)=>{
+  const b = e.target.closest('.file-open');
+  if(b) openStoredFile(b.getAttribute('data-path'));
 });
+
+$('subFiles').addEventListener('change', async (e)=>{
+  const d = subDraft;
+  if(!d) return;
+  const picked = Array.from(e.target.files || []);
+  e.target.value = '';
+  let skipped = 0;
+  for(const f of picked){
+    if(d.keep.length + d.add.length >= MAX_FILES){ skipped++; continue; }
+    const g = await shrinkImage(f);
+    if(g.size > MAX_FILE_BYTES){ skipped++; continue; }
+    d.add.push(g);
+  }
+  setMsgEl('subMsg', skipped ? skipped + ' arquivo(s) não entraram: máximo de ' + MAX_FILES + ' arquivos e 15 MB cada.' : '', 'error');
+  renderSubmission();
+});
+$('subFileList').addEventListener('click', (e)=>{
+  const b = e.target.closest('.file-x');
+  if(!b || !subDraft) return;
+  if(b.hasAttribute('data-keep')) subDraft.keep.splice(Number(b.getAttribute('data-keep')), 1);
+  else subDraft.add.splice(Number(b.getAttribute('data-add')), 1);
+  renderSubmission();
+});
+$('subEditBtn').addEventListener('click', ()=>{ if(subDraft){ subDraft.editing = true; renderSubmission(); } });
+
+$('subSend').addEventListener('click', async ()=>{
+  const d = subDraft;
+  if(!d || !sb || !currentUser) return;
+  if(!d.keep.length && !d.add.length){ setMsgEl('subMsg', 'Anexe o relatório: PDF, fotos ou outro arquivo.', 'error'); return; }
+  const btn = $('subSend');
+  btn.disabled = true;
+  const uploaded = [];
+  try{
+    for(let i = 0; i < d.add.length; i++){
+      const f = d.add[i];
+      setMsgEl('subMsg', 'Enviando arquivo ' + (i+1) + ' de ' + d.add.length + '…', 'info');
+      const path = `${currentUser.id}/${d.kind}/${d.id}/${Date.now()}-${i}-${safeFileName(f.name)}`;
+      const { error } = await sb.storage.from(BUCKET).upload(path, f, { contentType: f.type || 'application/octet-stream', upsert:false });
+      if(error) throw error;
+      uploaded.push({ path, name: f.name, size: f.size, type: f.type || '' });
+    }
+    setMsgEl('subMsg', 'Enviando para o monitor…', 'info');
+    const before = subOf(d.kind, d.id);
+    const files = [...d.keep, ...uploaded];
+    const { data, error } = await sb.rpc('submit_item', {
+      p_kind: d.kind, p_item_id: d.id, p_item_date: $('subDate').value || null,
+      p_report: $('subReport').value, p_files: files
+    });
+    if(error) throw error;
+    subs[d.kind][d.id] = data;
+    subsSave();
+    // Arquivos que a pessoa tirou do envio saem do Storage
+    if(before){
+      const keepPaths = new Set(files.map(f=> f.path));
+      const removed = (before.files || []).map(f=> f.path).filter(p=> !keepPaths.has(p));
+      if(removed.length) sb.storage.from(BUCKET).remove(removed);
+    }
+    closeModal('subModal');
+    renderCatalog(d.kind);
+    updateHeader();
+    showToast('Enviado! O monitor vai analisar ✓');
+  }catch(err){
+    if(uploaded.length) sb.storage.from(BUCKET).remove(uploaded.map(f=> f.path));
+    setMsgEl('subMsg', authErrorPt(err), 'error');
+  }finally{
+    btn.disabled = false;
+  }
+});
+
+$('subCancel').addEventListener('click', async (e)=>{
+  const d = subDraft;
+  if(!d) return;
+  if(!armButton('cancel-sub', e.currentTarget, 'Toque de novo para cancelar o envio')) return;
+  try{
+    const { data, error } = await sb.rpc('cancel_submission', { p_kind: d.kind, p_item_id: d.id });
+    if(error) throw error;
+    const paths = (data || []).map(f=> f.path).filter(Boolean);
+    if(paths.length) await sb.storage.from(BUCKET).remove(paths);
+    delete subs[d.kind][d.id];
+    subsSave();
+    closeModal('subModal');
+    renderCatalog(d.kind);
+    showToast('Envio cancelado');
+  }catch(err){ setMsgEl('subMsg', authErrorPt(err), 'error'); }
+});
+
+// Envios da própria conta (para mostrar o status de cada especialidade/insígnia)
+async function fetchOwnSubs(announce){
+  if(!sb || !currentUser) return;
+  const uid = currentUser.id;
+  try{
+    const rows = await fetchAll(()=> sb.from('submissions')
+      .select('id, kind, item_id, item_date, report, files, status, review_note, reviewed_at, submitted_at')
+      .eq('user_id', uid).order('item_id'));
+    if(!currentUser || currentUser.id !== uid) return;
+    const next = { especialidade:{}, insignia:{} };
+    rows.forEach(r=>{ if(next[r.kind]) next[r.kind][r.item_id] = r; });
+    const before = subs;
+    subs = next;
+    subsSave();
+    if(announce) announceReviewChanges(before, next);
+    renderSpecialidades();
+    updateHeader();
+  }catch(err){ console.error('Erro ao carregar envios', err); }
+}
 
 // ---------- Abas ----------
 const TABS = {
   progressao:     ['tabProgressaoBtn','viewProgressao'],
   especialidades: ['tabEspecialidadesBtn','viewEspecialidades'],
+  insignias:      ['tabInsigniasBtn','viewInsignias'],
   evolucao:       ['tabEvolucaoBtn','viewEvolucao'],
   notas:          ['tabNotasBtn','viewNotas'],
   patrulha:       ['tabPatrulhaBtn','viewPatrulha']
@@ -595,6 +808,7 @@ function showTab(name){
   });
   if(name === 'evolucao') renderEvolucao();
   if(name === 'patrulha') loadPatrol();
+  if(name === 'especialidades' || name === 'insignias') fetchOwnSubs();
   window.scrollTo({ top:0 });
 }
 Object.keys(TABS).forEach(k=> $(TABS[k][0]).addEventListener('click', ()=> showTab(k)));
@@ -605,14 +819,20 @@ $('searchProgressao').addEventListener('input', (e)=>{
 });
 $('searchEspecialidades').addEventListener('input', (e)=>{
   searchQueryEspecialidades = normalizeText(e.target.value.trim());
-  renderSpecialidades();
+  renderCatalog('especialidade');
+});
+$('searchInsignias').addEventListener('input', (e)=>{
+  searchQueryInsignias = normalizeText(e.target.value.trim());
+  renderCatalog('insignia');
 });
 
 // ---------- Evolução ----------
-function collectDone(prog = progress, spec = specProgress){
+function collectDone(prog = progress, s = subs){
   const out = [];
   Object.entries(prog).forEach(([id,p])=>{ if(p && p.checked && p.date) out.push({ id, date:p.date, kind:'Progressão' }); });
-  Object.entries(spec).forEach(([id,p])=>{ if(p && p.checked && p.date) out.push({ id, date:p.date, kind:'Especialidade' }); });
+  ['especialidade','insignia'].forEach(kind=>{
+    Object.entries(s[kind] || {}).forEach(([id,x])=>{ if(x && x.status === 'aprovada' && x.item_date) out.push({ id, date:x.item_date, kind: KINDS[kind].label }); });
+  });
   return out;
 }
 
@@ -829,7 +1049,8 @@ function progressPickItems(){
     [...(b.items||[]), ...(b.fixas||[]), ...(b.variaveis||[])].forEach(i=> out.push({ id:i.id, text:i.text, ctx }));
     if(b.ou) out.push({ id:b.ou.id, text:b.ou.text, ctx: ctx + ' · OU' });
   }));
-  SPECIALTIES.forEach(a=> [...a.especialidades, ...a.insignias].forEach(i=> out.push({ id:i.id, text:i.text, ctx:'Especialidades · ' + a.name })));
+  SPECIALTIES.forEach(a=> a.especialidades.forEach(i=> out.push({ id:i.id, text:i.text, ctx:'Especialidades · ' + a.name })));
+  INSIGNIAS.forEach(a=> a.items.forEach(i=> out.push({ id:i.id, text:i.text, ctx:'Insígnias · ' + a.name })));
   _pickItemsCache = out;
   return out;
 }
@@ -910,7 +1131,7 @@ document.querySelectorAll('.modal-overlay').forEach(m=>{
 document.querySelectorAll('[data-close]').forEach(b=> b.addEventListener('click', ()=> closeModal(b.getAttribute('data-close'))));
 document.addEventListener('keydown', (e)=>{
   if(e.key !== 'Escape') return;
-  ['pickModal','memberModal','accountModal'].forEach(id=>{ if(!$(id).hidden) id === 'pickModal' ? closePicker() : closeModal(id); });
+  ['pickModal','reviewModal','subModal','memberModal','accountModal'].forEach(id=>{ if(!$(id).hidden) id === 'pickModal' ? closePicker() : closeModal(id); });
 });
 
 // ---------- Exportar PDF ----------
@@ -965,11 +1186,11 @@ function exportPDF(){
   const stage = currentStage(blocksDone);
   const ids = allItemIds();
   const itemsDone = ids.filter(id=> isDone(progress, id)).length;
-  const specIds = allSpecIds();
-  const specDone = specIds.filter(id=> isDone(specProgress, id)).length;
+  const specTotal = allIdsOf('especialidade').length + allIdsOf('insignia').length;
+  const specDone = approvedCount('especialidade') + approvedCount('insignia');
 
   heading('Estágio atual: ' + stage.label, 13);
-  subtext(blocksDone + ' de ' + blocksTotal + ' blocos concluídos  ·  ' + itemsDone + '/' + ids.length + ' itens de progressão  ·  ' + specDone + '/' + specIds.length + ' especialidades/insígnias');
+  subtext(blocksDone + ' de ' + blocksTotal + ' blocos concluídos  ·  ' + itemsDone + '/' + ids.length + ' itens de progressão  ·  ' + specDone + '/' + specTotal + ' especialidades/insígnias aprovadas');
   y += 6;
 
   heading('Progressão pessoal', 15);
@@ -999,17 +1220,19 @@ function exportPDF(){
   });
 
   sectionRule();
-  heading('Especialidades e Insígnias conquistadas', 15);
-  let anySpec = false;
-  SPECIALTIES.forEach(area=>{
-    const done = [...area.especialidades, ...area.insignias].filter(i=> isDone(specProgress, i.id));
-    if(!done.length) return;
-    anySpec = true;
-    heading(area.name, 12);
-    done.forEach(i=> bulletLine(i.text, specProgress[i.id].date ? fmtDate(specProgress[i.id].date) : ''));
-    y += 4;
+  ['especialidade','insignia'].forEach(kind=>{
+    heading((kind === 'insignia' ? 'Insígnias' : 'Especialidades') + ' aprovadas', 15);
+    let any = false;
+    catalogAreas(kind).forEach(area=>{
+      const done = area.items.filter(i=> isApproved(kind, i.id));
+      if(!done.length) return;
+      any = true;
+      heading(area.name, 12);
+      done.forEach(i=>{ const x = subOf(kind, i.id); bulletLine(i.text, x.item_date ? fmtDate(x.item_date) : ''); });
+      y += 4;
+    });
+    if(!any) subtext('Nenhuma ' + (kind === 'insignia' ? 'insígnia' : 'especialidade') + ' aprovada ainda.');
   });
-  if(!anySpec) subtext('Nenhuma especialidade marcada ainda.');
 
   const PDF_NAME = 'progressao-senior-resumo.pdf';
   if(IS_NATIVE_APP){ savePdfNative(doc, PDF_NAME); return; }
@@ -1290,6 +1513,7 @@ async function enterAs(user){
     adoptLegacyData();
     progress = readJSON(STORAGE_KEY, {});
     specProgress = readJSON(SPEC_STORAGE_KEY, {});
+    subs = Object.assign({ especialidade:{}, insignia:{} }, readJSON(SUBS_KEY, {}));
     notes = readJSON(NOTES_STORAGE_KEY, []);
 
     let p = await fetchProfile();
@@ -1315,6 +1539,10 @@ function showApp(){
   renderSpecialidades();
   renderNotes();
   showTab(currentTab);
+  updatePatrolBadge();
+  refreshNotifButtons();
+  startRealtime();
+  refreshPending(true);
 }
 
 function updateAccountUI(){
@@ -1330,11 +1558,13 @@ function updateAccountUI(){
 
 function resetState(){
   currentUser = null; profile = null;
-  progress = {}; specProgress = {}; notes = [];
+  progress = {}; specProgress = {}; notes = []; subs = { especialidade:{}, insignia:{} };
+  stopRealtime(); pendingSubs = []; updatePatrolBadge();
   patrolData = null; currentTab = 'progressao'; monitorCodeVisible = false;
   authMode = 'in';
   ['authName','authCode','authEmail','authPassword','authPassword2','searchProgressao','searchEspecialidades'].forEach(id=>{ $(id).value = ''; });
-  searchQueryProgressao = ''; searchQueryEspecialidades = '';
+  searchQueryProgressao = ''; searchQueryEspecialidades = ''; searchQueryInsignias = '';
+  $('searchInsignias').value = '';
   codeCheck = { code:'', valid:false };
   $('authCodeHint').className = 'field-hint';
   $('authCodeHint').textContent = 'Peça o código ao monitor ou ao chefe da sua tropa.';
@@ -1421,6 +1651,9 @@ $('signOutBtn').addEventListener('click', signOutUser);
 $('deleteAccountBtn').addEventListener('click', async (e)=>{
   if(!armButton('delete-account', e.currentTarget, 'Toque de novo para excluir PARA SEMPRE')) return;
   try{
+    // Apaga os arquivos de relatório antes (o banco não apaga o Storage sozinho)
+    const paths = ['especialidade','insignia'].flatMap(k=> Object.values(subs[k] || {}).flatMap(x=> (x.files || []).map(f=> f.path)));
+    if(paths.length) await sb.storage.from(BUCKET).remove(paths);
     const { error } = await sb.rpc('delete_my_account');
     if(error) throw error;
     clearLocalForUser();
@@ -1452,9 +1685,10 @@ async function upsertCloud(kind, itemId, p){
       user_id: currentUser.id,
       kind,
       item_id: itemId,
-      checked: !!p.checked,
-      item_date: p.date || null,
+      checked: kind === 'progressao' ? !!p.checked : false,
+      item_date: kind === 'progressao' ? (p.date || null) : null,
       notes: kind === 'especialidade' ? (p.notes || null) : null,
+      // especialidades/insígnias agora são marcadas pelo envio com relatório (tabela submissions)
       updated_at: new Date(p.u || Date.now()).toISOString()
     });
     if(error) throw error;
@@ -1523,6 +1757,7 @@ async function syncFromCloudAfterLogin(){
   specSave();
   render();
   renderSpecialidades();
+  fetchOwnSubs(true);
   for(const [kind, id, p] of pushes) await upsertCloud(kind, id, p);
   await syncNotesFromCloud(uid);
 }
@@ -1561,14 +1796,16 @@ function memberSummary(m){
   const { done: blocks, total: blocksTotal } = countBlocksCompleted(m.prog);
   const ids = allItemIds();
   const items = ids.filter(id=> isDone(m.prog, id)).length;
-  const specs = allSpecIds().filter(id=> isDone(m.spec, id)).length;
-  const dates = collectDone(m.prog, m.spec).map(d=> d.date).sort();
+  const specs = approvedCount('especialidade', m.subs);
+  const insigs = approvedCount('insignia', m.subs);
+  const pending = pendingCountOf('especialidade', m.subs) + pendingCountOf('insignia', m.subs);
+  const dates = collectDone(m.prog, m.subs).map(d=> d.date).sort();
   const last = dates.length ? dates[dates.length-1] : null;
   const recent30 = dates.filter(d=> daysSince(d) <= 30).length;
   return {
     blocks, blocksTotal, items, itemsTotal: ids.length,
     pct: Math.round(items / ids.length * 100),
-    specs, last, recent30, stage: currentStage(blocks, m.prog)
+    specs, insigs, pending, last, recent30, stage: currentStage(blocks, m.prog)
   };
 }
 
@@ -1586,16 +1823,26 @@ async function loadPatrol(force){
     if(profRes.error) throw profRes.error;
     const people = profRes.data || [];
     const ids = people.map(p=> p.user_id);
-    const rows = ids.length ? await fetchAll(()=> sb.from('senior_progress')
-      .select('user_id, kind, item_id, item_date')
-      .in('user_id', ids).eq('checked', true).order('user_id').order('item_id')) : [];
+    const [rows, subRows] = ids.length ? await Promise.all([
+      fetchAll(()=> sb.from('senior_progress')
+        .select('user_id, kind, item_id, item_date')
+        .in('user_id', ids).eq('kind', 'progressao').eq('checked', true).order('user_id').order('item_id')),
+      fetchAll(()=> sb.from('submissions')
+        .select('id, user_id, kind, item_id, item_date, report, files, status, review_note, reviewed_at, submitted_at')
+        .in('user_id', ids).order('submitted_at'))
+    ]) : [[], []];
     const byUser = {};
-    people.forEach(p=>{ byUser[p.user_id] = { id:p.user_id, name:p.full_name || 'Sem nome', role:p.role, isMe: p.user_id === currentUser.id, joined:p.created_at, prog:{}, spec:{} }; });
+    people.forEach(p=>{ byUser[p.user_id] = { id:p.user_id, name:p.full_name || 'Sem nome', role:p.role, isMe: p.user_id === currentUser.id, joined:p.created_at, prog:{}, subs:{ especialidade:{}, insignia:{} } }; });
     rows.forEach(r=>{
       const m = byUser[r.user_id];
-      if(!m) return;
-      (r.kind === 'progressao' ? m.prog : m.spec)[r.item_id] = { checked:true, date: r.item_date || '' };
+      if(m) m.prog[r.item_id] = { checked:true, date: r.item_date || '' };
     });
+    subRows.forEach(r=>{
+      const m = byUser[r.user_id];
+      if(m && m.subs[r.kind]) m.subs[r.kind][r.item_id] = r;
+    });
+    pendingSubs = subRows.filter(r=> r.status === 'enviada' && byUser[r.user_id]);
+    updatePatrolBadge();
     const members = Object.values(byUser);
     members.forEach(m=> m.sum = memberSummary(m));
     patrolData = { codes: (codesRes.data || [])[0] || null, members, loadedAt: Date.now() };
@@ -1626,16 +1873,18 @@ function renderPatrol(){
 
   // Resumo
   const avgBlocks = n ? members.reduce((s,m)=> s + m.sum.blocks, 0) / n : 0;
-  const totalSpecs = members.reduce((s,m)=> s + m.sum.specs, 0);
+  const totalSpecs = members.reduce((s,m)=> s + m.sum.specs + m.sum.insigs, 0);
   const active = members.filter(m=> m.sum.last && daysSince(m.sum.last) <= 30).length;
   const stageCount = {};
   members.forEach(m=>{ stageCount[m.sum.stage.label] = (stageCount[m.sum.stage.label]||0) + 1; });
   const topStage = Object.entries(stageCount).sort((a,b)=> b[1]-a[1])[0];
   $('patrolStats').innerHTML =
     `<div class="stat"><div class="n">${avgBlocks.toFixed(1).replace('.', ',')}</div><div class="l">média de blocos (de 18)</div></div>` +
-    `<div class="stat"><div class="n">${totalSpecs}</div><div class="l">especialidades conquistadas</div></div>` +
+    `<div class="stat"><div class="n">${totalSpecs}</div><div class="l">especialidades e insígnias aprovadas</div></div>` +
     `<div class="stat"><div class="n">${active}/${n}</div><div class="l">ativos nos últimos 30 dias</div></div>` +
     `<div class="stat"><div class="n" style="font-size:22px;padding-top:4px">${topStage ? escapeHtml(topStage[0]) : '—'}</div><div class="l">etapa mais comum</div></div>`;
+
+  renderPendingInbox();
 
   // Lista
   const sort = $('memberSort').value;
@@ -1677,7 +1926,8 @@ function memberCard(m){
         <span class="member-meta">
           <span>${s.stage.icon} <b>${s.stage.label}</b></span>
           <span><b>${s.blocks}</b>/${s.blocksTotal} blocos</span>
-          <span><b>${s.specs}</b> espec.</span>
+          <span><b>${s.specs}</b> espec. · <b>${s.insigs}</b> insíg.</span>
+          ${s.pending ? `<span class="pending-tag">⏳ ${s.pending} para analisar</span>` : ''}
           <span>${lastLabel(s.last)}</span>
         </span>
         <span class="bar-track" style="display:block"><span class="bar-fill" style="display:block;width:${blocksPct}%"></span></span>
@@ -1719,15 +1969,16 @@ function openMemberDetail(id){
     eixosHtml += '</div>';
   });
 
-  const recent = collectDone(m.prog, m.spec).sort((a,b)=> b.date.localeCompare(a.date)).slice(0, 8);
+  const recent = collectDone(m.prog, m.subs).sort((a,b)=> b.date.localeCompare(a.date)).slice(0, 8);
   const recentHtml = recent.length
     ? recent.map(d=> `<div class="evo-recent"><span class="d">${fmtDate(d.date)}</span><span class="t" title="${escapeHtml(texts[d.id]||'')}">${escapeHtml(texts[d.id]||d.id)}</span></div>`).join('')
     : '<div class="pick-hint">Nada marcado com data ainda.</div>';
 
-  const specList = SPECIALTIES.flatMap(a=> [...a.especialidades, ...a.insignias]).filter(i=> isDone(m.spec, i.id));
-  const specHtml = specList.length
-    ? specList.map(i=> `<span class="badge" style="text-transform:none;font-family:var(--font-body);font-size:11.5px;display:inline-block;margin:0 6px 6px 0">${escapeHtml(i.text)}</span>`).join('')
-    : '<div class="pick-hint">Nenhuma especialidade marcada.</div>';
+  const subsHtml = (kind)=>{
+    const list = Object.values(m.subs[kind]).sort((a,b)=> (b.submitted_at||'').localeCompare(a.submitted_at||''));
+    if(!list.length) return '<div class="pick-hint">Nenhum envio ainda.</div>';
+    return list.map(x=> `<button class="sub-line" data-review="${x.id}"><span class="sub-chip sub-${STATUS_INFO[x.status].cls}">${STATUS_INFO[x.status].chip}</span><span class="sub-line-name">${escapeHtml(itemName(kind, x.item_id))}</span></button>`).join('');
+  };
 
   $('memberDetail').innerHTML = `
     <div class="account-head">
@@ -1740,12 +1991,13 @@ function openMemberDetail(id){
     <div class="evo-stats">
       <div class="stat"><div class="n">${s.blocks}/${s.blocksTotal}</div><div class="l">blocos concluídos</div></div>
       <div class="stat"><div class="n">${s.pct}%</div><div class="l">${s.items} de ${s.itemsTotal} itens</div></div>
-      <div class="stat"><div class="n">${s.specs}</div><div class="l">especialidades e insígnias</div></div>
+      <div class="stat"><div class="n">${s.specs} · ${s.insigs}</div><div class="l">especialidades · insígnias aprovadas</div></div>
       <div class="stat"><div class="n">${s.recent30}</div><div class="l">itens nos últimos 30 dias</div></div>
     </div>
     <div class="card"><div class="card-title">Blocos</div>${eixosHtml}</div>
     <div class="card"><div class="card-title">Últimas conquistas</div>${recentHtml}</div>
-    <div class="card"><div class="card-title">Especialidades</div>${specHtml}</div>
+    <div class="card"><div class="card-title">Especialidades</div>${subsHtml('especialidade')}</div>
+    <div class="card"><div class="card-title">Insígnias</div>${subsHtml('insignia')}</div>
     ${m.isMe ? '' : `<div class="danger-zone"><p>Remover tira a pessoa da patrulha. Ela mantém o próprio progresso e pode voltar com o código.</p><button class="btn btn-danger btn-block" id="removeMemberBtn" data-id="${m.id}">Remover da patrulha</button></div>`}
   `;
   const rm = $('removeMemberBtn');
@@ -1805,6 +2057,255 @@ $('regenCode').addEventListener('click', async (e)=>{
     showToast('Novo código: ' + data);
   }catch(err){ showToast(authErrorPt(err)); }
 });
+
+// =====================================================================
+//  Envios para analisar (monitor) e avisos
+// =====================================================================
+let pendingSubs = [];   // envios "enviada" da patrulha (para o contador)
+let rtChannel = null;
+let reviewing = null;   // envio aberto na tela de análise
+
+function updatePatrolBadge(){
+  const n = pendingSubs.length;
+  const b = $('patrolBadge');
+  b.textContent = n > 99 ? '99+' : String(n);
+  b.hidden = !n || !(profile && profile.role === 'monitor');
+}
+
+function findPatrolSub(id){
+  if(!patrolData) return null;
+  for(const m of patrolData.members){
+    for(const kind of ['especialidade','insignia']){
+      const x = Object.values(m.subs[kind]).find(s=> s.id === id);
+      if(x) return { m, kind, x };
+    }
+  }
+  return null;
+}
+
+function renderPendingInbox(){
+  const box = $('pendingInbox');
+  if(!patrolData){ box.innerHTML = ''; return; }
+  const list = [];
+  patrolData.members.forEach(m=> ['especialidade','insignia'].forEach(kind=>
+    Object.values(m.subs[kind]).forEach(x=>{ if(x.status === 'enviada') list.push({ m, kind, x }); })
+  ));
+  list.sort((a,b)=> (a.x.submitted_at||'').localeCompare(b.x.submitted_at||''));
+  if(!list.length){
+    box.innerHTML = '<div class="card inbox-empty"><div class="card-title">Para analisar</div><div class="pick-hint" style="text-align:left;padding:2px">Nenhum envio esperando. Quando alguém mandar o relatório de uma especialidade ou insígnia, ele aparece aqui e você recebe um aviso.</div></div>';
+    return;
+  }
+  box.innerHTML = `<div class="card inbox"><div class="card-title">Para analisar <span class="count-pill">${list.length}</span></div>` +
+    list.map(({ m, kind, x })=> `
+      <button class="inbox-row" data-review="${x.id}">
+        <span class="avatar ${m.role==='monitor'?'monitor':''}">${escapeHtml(initials(m.name))}</span>
+        <span class="inbox-main">
+          <span class="inbox-title">${escapeHtml(itemName(kind, x.item_id))}</span>
+          <span class="inbox-meta">${escapeHtml(firstName(m.name))} · ${KINDS[kind].label} · ${(x.files||[]).length} arquivo${(x.files||[]).length!==1?'s':''} · ${lastLabel((x.submitted_at||'').slice(0,10))}</span>
+        </span>
+        <span class="member-chev"></span>
+      </button>`).join('') + '</div>';
+}
+
+document.addEventListener('click', (e)=>{
+  const b = e.target.closest('[data-review]');
+  if(b) openReview(b.getAttribute('data-review'));
+});
+
+async function openReview(id){
+  const found = findPatrolSub(id);
+  if(!found) return;
+  const { m, kind, x } = found;
+  reviewing = { id, m, kind };
+  const files = x.files || [];
+  const images = files.filter(f=> /^image\//.test(f.type || '') || /\.(jpe?g|png|webp|gif)$/i.test(f.name || ''));
+  $('reviewBody').innerHTML = `
+    <div class="account-head">
+      <span class="avatar lg ${m.role==='monitor'?'monitor':''}">${escapeHtml(initials(m.name))}</span>
+      <div class="who"><b>${escapeHtml(m.name)}</b><span>${KINDS[kind].label} · enviado ${x.submitted_at ? new Date(x.submitted_at).toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : ''}</span></div>
+    </div>
+    <div class="modal-title">${escapeHtml(itemName(kind, x.item_id))}</div>
+    <div class="review-status"><span class="sub-chip sub-${STATUS_INFO[x.status].cls}">${STATUS_INFO[x.status].chip}</span>${x.item_date ? ' <span class="note-date">conquistada em ' + fmtDate(x.item_date) + '</span>' : ''}</div>
+    ${x.report ? `<div class="field"><label>Comentário de ${escapeHtml(firstName(m.name))}</label><div class="report-text">${escapeHtml(x.report)}</div></div>` : ''}
+    ${images.length ? '<div class="thumbs" id="reviewThumbs">' + images.map(f=> `<button class="thumb file-open" data-path="${escapeHtml(f.path)}"><span class="thumb-ph">🖼️</span></button>`).join('') + '</div>' : ''}
+    <div class="field"><label>Relatório e arquivos</label>${filesListHtml(files)}</div>
+    ${x.review_note && x.status !== 'enviada' ? `<div class="field"><label>Seu comentário anterior</label><div class="report-text">${escapeHtml(x.review_note)}</div></div>` : ''}
+  `;
+  $('reviewNote').value = '';
+  setMsgEl('reviewMsg', '');
+  $('reviewApprove').textContent = x.status === 'aprovada' ? '✓ Já aprovada' : '✓ Aprovar';
+  $('reviewApprove').disabled = x.status === 'aprovada';
+  openModal('reviewModal');
+  $('reviewModal').querySelector('.modal-box').scrollTop = 0;
+
+  // Miniaturas das fotos (links temporários)
+  if(images.length){
+    try{
+      const { data } = await sb.storage.from(BUCKET).createSignedUrls(images.map(f=> f.path), 600);
+      (data || []).forEach((d, i)=>{
+        const el = document.querySelectorAll('#reviewThumbs .thumb')[i];
+        if(el && d && d.signedUrl) el.innerHTML = `<img src="${escapeHtml(d.signedUrl)}" alt="" loading="lazy">`;
+      });
+    }catch(err){ /* fica o ícone */ }
+  }
+}
+
+async function decideReview(approve){
+  if(!reviewing) return;
+  const note = $('reviewNote').value.trim();
+  if(!approve && !note){ setMsgEl('reviewMsg', 'Escreva o que precisa ser ajustado para devolver.', 'error'); $('reviewNote').focus(); return; }
+  $('reviewApprove').disabled = $('reviewReturn').disabled = true;
+  try{
+    const { data, error } = await sb.rpc('review_submission', { p_id: reviewing.id, p_approve: approve, p_note: note });
+    if(error) throw error;
+    const { m, kind } = reviewing;
+    m.subs[kind][data.item_id] = data;
+    m.sum = memberSummary(m);
+    if(m.isMe){ subs[kind][data.item_id] = data; subsSave(); renderCatalog(kind); }
+    pendingSubs = pendingSubs.filter(x=> x.id !== data.id);
+    updatePatrolBadge();
+    closeModal('reviewModal');
+    renderPatrol();
+    if(!$('memberModal').hidden) openMemberDetail(m.id);
+    showToast(approve ? 'Aprovada ✓ ' + firstName(m.name) + ' vai receber o aviso' : 'Devolvida para ' + firstName(m.name) + ' ajustar');
+  }catch(err){ setMsgEl('reviewMsg', authErrorPt(err), 'error'); }
+  finally{ $('reviewApprove').disabled = $('reviewReturn').disabled = false; }
+}
+$('reviewApprove').addEventListener('click', ()=> decideReview(true));
+$('reviewReturn').addEventListener('click', ()=> decideReview(false));
+
+// ---------- Avisos ----------
+const LocalNotif = ()=> (IS_NATIVE_APP && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
+
+async function notifPermission(){
+  const ln = LocalNotif();
+  if(ln){ try{ return (await ln.checkPermissions()).display; }catch(err){ return 'denied'; } }
+  if(!('Notification' in window)) return 'unsupported';
+  return Notification.permission; // granted | denied | default
+}
+async function askNotifPermission(){
+  const ln = LocalNotif();
+  if(ln){ try{ return (await ln.requestPermissions()).display; }catch(err){ return 'denied'; } }
+  if(!('Notification' in window)) return 'unsupported';
+  try{ return await Notification.requestPermission(); }catch(err){ return 'denied'; }
+}
+async function refreshNotifButtons(){
+  const st = await notifPermission();
+  const label = st === 'granted' ? '🔔 Avisos ativados neste aparelho'
+    : st === 'denied' ? '🔕 Avisos bloqueados (libere nas configurações do aparelho)'
+    : st === 'unsupported' ? '🔕 Este navegador não mostra avisos'
+    : '🔔 Ativar avisos neste aparelho';
+  ['notifBtn','notifBtnPatrol'].forEach(id=>{
+    const b = $(id);
+    b.textContent = label;
+    b.disabled = st !== 'default' && st !== 'prompt' && st !== 'prompt-with-rationale';
+  });
+  $('notifBanner').hidden = !(st === 'default' || st === 'prompt' || st === 'prompt-with-rationale');
+}
+['notifBtn','notifBtnPatrol'].forEach(id=> $(id).addEventListener('click', async ()=>{
+  const st = await askNotifPermission();
+  if(st === 'granted') showToast('Avisos ativados ✓');
+  refreshNotifButtons();
+}));
+
+let notifSeq = 1;
+async function notify(title, body, tab){
+  showToast(title);
+  if(!document.hidden) return; // com o app aberto na tela, o aviso na tela basta
+  const ln = LocalNotif();
+  try{
+    if(ln){
+      await ln.schedule({ notifications:[{ id: (Date.now() % 1000000) + (notifSeq++), title, body: body || '', extra:{ tab: tab || '' }, smallIcon:'ic_stat_notify', iconColor:'#C33E58' }] });
+      return;
+    }
+    if(!('Notification' in window) || Notification.permission !== 'granted') return;
+    const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration();
+    if(reg) await reg.showNotification(title, { body, icon:'icon-192.png', badge:'icon-192.png', tag:'envio-' + Date.now(), data:{ tab } });
+    else new Notification(title, { body, icon:'icon-192.png' });
+  }catch(err){ console.error('Erro ao mostrar aviso', err); }
+}
+(function(){
+  const ln = LocalNotif();
+  if(ln && ln.addListener) ln.addListener('localNotificationActionPerformed', (e)=>{
+    const tab = e && e.notification && e.notification.extra && e.notification.extra.tab;
+    if(tab && currentUser && profile) showTab(tab);
+  });
+  if(navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', (e)=>{
+    if(e.data && e.data.tab && currentUser && profile) showTab(e.data.tab);
+  });
+})();
+
+// Monitor: novos envios desde a última vez
+async function refreshPending(announce){
+  if(!sb || !currentUser || !profile || profile.role !== 'monitor') return;
+  try{
+    const { data, error } = await sb.from('submissions')
+      .select('id, user_id, kind, item_id, submitted_at').eq('status', 'enviada').order('submitted_at');
+    if(error) throw error;
+    pendingSubs = data || [];
+    updatePatrolBadge();
+    const st = readJSON(NOTIF_KEY, { seen: [] });
+    const seen = new Set(st.seen || []);
+    const key = (x)=> x.id + '@' + x.submitted_at;
+    const fresh = pendingSubs.filter(x=> x.user_id !== currentUser.id && !seen.has(key(x)));
+    writeJSON(NOTIF_KEY, Object.assign(st, { seen: pendingSubs.map(key).slice(-500) }));
+    if(announce && fresh.length){
+      let who = '';
+      try{
+        const { data: ppl } = await sb.from('profiles').select('user_id, full_name').in('user_id', [...new Set(fresh.map(x=> x.user_id))]);
+        const names = {}; (ppl || []).forEach(p=> names[p.user_id] = firstName(p.full_name));
+        who = fresh.length === 1
+          ? (names[fresh[0].user_id] || 'Alguém') + ' enviou ' + (fresh[0].kind === 'insignia' ? 'a insígnia ' : 'a especialidade ') + itemName(fresh[0].kind, fresh[0].item_id)
+          : [...new Set(fresh.map(x=> names[x.user_id]).filter(Boolean))].join(', ') + ' enviaram relatórios';
+      }catch(err){}
+      notify(fresh.length === 1 ? '📬 Novo envio para analisar' : '📬 ' + fresh.length + ' novos envios para analisar', who, 'patrulha');
+      if(currentTab === 'patrulha') loadPatrol(true);
+    }
+  }catch(err){ /* sem internet: tenta depois */ }
+}
+
+// Membro: resultado da análise do monitor
+function announceReviewChanges(before, after){
+  ['especialidade','insignia'].forEach(kind=>{
+    Object.values(after[kind] || {}).forEach(x=>{
+      const old = (before[kind] || {})[x.item_id];
+      if(!old || old.status !== 'enviada' || x.status === 'enviada') return;
+      if(x.status === 'aprovada') notify('🏅 ' + KINDS[kind].label + ' aprovada!', itemName(kind, x.item_id), kind === 'insignia' ? 'insignias' : 'especialidades');
+      if(x.status === 'devolvida') notify('↩ ' + KINDS[kind].label + ' devolvida pelo monitor', itemName(kind, x.item_id) + (x.review_note ? ' — ' + x.review_note : ''), kind === 'insignia' ? 'insignias' : 'especialidades');
+    });
+  });
+}
+
+function startRealtime(){
+  stopRealtime();
+  if(!sb || !currentUser || typeof sb.channel !== 'function') return;
+  const uid = currentUser.id;
+  rtChannel = sb.channel('envios-' + uid)
+    .on('postgres_changes', { event:'*', schema:'public', table:'submissions' }, (payload)=>{
+      if(!currentUser || currentUser.id !== uid) return;
+      const row = (payload && payload.new && payload.new.id) ? payload.new : null;
+      if(row && row.user_id === uid) setTimeout(()=> fetchOwnSubs(true), 0);
+      if(profile && profile.role === 'monitor') setTimeout(()=>{
+        refreshPending(true);
+        if(currentTab === 'patrulha') loadPatrol(true);
+      }, 0);
+    })
+    .subscribe();
+}
+function stopRealtime(){
+  if(rtChannel && sb){ try{ sb.removeChannel(rtChannel); }catch(err){} }
+  rtChannel = null;
+}
+
+// Ao voltar para o app (ou a cada 2 minutos com ele aberto), confere se há novidades
+function checkForUpdates(){
+  if(!currentUser || !profile || !profile.patrol_id || document.hidden) return;
+  refreshPending(true);
+  fetchOwnSubs(true);
+}
+document.addEventListener('visibilitychange', checkForUpdates);
+document.addEventListener('resume', checkForUpdates);
+setInterval(checkForUpdates, 120000);
 
 // =====================================================================
 //  Início

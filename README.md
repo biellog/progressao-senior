@@ -44,6 +44,7 @@ npm run build:app      # prepara o app e copia para android/
 
 - **Login obrigatório:** para criar a conta é preciso o código da patrulha. O código de monitor dá acesso ao painel.
 - **Progressão:** eixos, blocos, ações fixas/variáveis/OU, etapas Escalada → Conquista → Azimute → Escoteiro da Pátria.
-- **Especialidades e insígnias**, gráfico de **evolução**, **notas** pessoais e **PDF** com o resumo.
-- **Painel do monitor:** membros da patrulha com etapa, blocos, especialidades e última atividade; detalhe bloco a bloco de cada um; código de convite (copiar, compartilhar, gerar novo); remover alguém da patrulha.
+- **Especialidades e Insígnias** (cada uma na sua aba): para marcar, a pessoa envia o **relatório** (PDF, fotos ou outros arquivos). O monitor recebe um **aviso**, analisa e **aprova** ou **devolve** com comentário.
+- Gráfico de **evolução**, **notas** pessoais e **PDF** com o resumo.
+- **Painel do monitor:** caixa **Para analisar** com os envios da patrulha, contador na aba e avisos no aparelho; membros da patrulha com etapa, blocos, especialidades e última atividade; detalhe bloco a bloco de cada um; código de convite (copiar, compartilhar, gerar novo); remover alguém da patrulha.
 - **Privacidade:** o monitor vê a progressão da patrulha, mas as notas de cada um são privadas. A pessoa pode excluir a própria conta e todos os dados em **Minha conta**.

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#150C0E">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co; base-uri 'self'; form-action 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://*.supabase.co wss://*.supabase.co; base-uri 'self'; form-action 'self';">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Progressão Ramo Sênior</title>
 <!--WEB_HEAD-->
@@ -151,18 +151,32 @@
 
     <section class="wrap" id="viewEspecialidades" hidden>
       <div class="view-title">Especialidades</div>
-      <div class="intro-note">Marque as especialidades e insígnias que você já conquistou, com a data. "Ver requisitos" abre o Guia oficial — o leitor não permite link direto para cada página, então procure dentro dele.</div>
+      <div class="intro-note">Para marcar uma especialidade, envie o relatório (PDF, fotos ou outros arquivos). O monitor recebe um aviso, analisa e aprova ou devolve com um comentário. "Ver requisitos" abre o Guia oficial.</div>
       <div class="spec-frac-row">
         <div class="num" id="specFracLabel">0 / 0</div>
-        <div class="label">especialidades e insígnias conquistadas</div>
+        <div class="label">especialidades aprovadas <span id="specPendingLabel" class="pending-label"></span></div>
       </div>
       <div class="search-row">
         <input type="search" id="searchEspecialidades" class="search-input" placeholder="Buscar por uma palavra…">
         <span class="search-count" id="searchCountEspecialidades"></span>
       </div>
       <div id="specContent" class="loading">Carregando…</div>
-      <button class="reset-btn" id="specResetBtn">Limpar especialidades marcadas</button>
       <div class="footer">Lista compilada a partir das opções "OU" citadas na Progressão — Ramo Sênior 2026. Para requisitos completos, consulte o Guia de Especialidades e Insígnias oficial.</div>
+    </section>
+
+    <section class="wrap" id="viewInsignias" hidden>
+      <div class="view-title">Insígnias</div>
+      <div class="intro-note">Como nas especialidades: envie o relatório da insígnia (PDF, fotos ou outros arquivos) e o monitor da patrulha analisa.</div>
+      <div class="spec-frac-row">
+        <div class="num" id="insigFracLabel">0 / 0</div>
+        <div class="label">insígnias aprovadas <span id="insigPendingLabel" class="pending-label"></span></div>
+      </div>
+      <div class="search-row">
+        <input type="search" id="searchInsignias" class="search-input" placeholder="Buscar insígnia…">
+        <span class="search-count" id="searchCountInsignias"></span>
+      </div>
+      <div id="insigContent" class="loading">Carregando…</div>
+      <div class="footer">Insígnias citadas na Progressão — Ramo Sênior 2026. Requisitos completos no Guia de Especialidades e Insígnias oficial.</div>
     </section>
 
     <section class="wrap" id="viewEvolucao" hidden>
@@ -190,6 +204,11 @@
         <h2 id="patrolTitle">Patrulha</h2>
         <p id="patrolSubtitle">Acompanhe a progressão da sua patrulha.</p>
       </div>
+      <div class="notif-banner" id="notifBanner" hidden>
+        <span>Receba um aviso no aparelho quando alguém enviar um relatório.</span>
+        <button class="btn btn-sm btn-gold" id="notifBtnPatrol">🔔 Ativar avisos</button>
+      </div>
+      <div id="pendingInbox"></div>
       <div class="stats-grid" id="patrolStats"></div>
 
       <div class="card">
@@ -245,7 +264,11 @@
       </button>
       <button class="tab-btn" id="tabEspecialidadesBtn" data-tab="especialidades">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="6"/><path d="m8.5 14-1.5 7 5-3 5 3-1.5-7"/></svg>
-        <span class="tab-label">Especialid.</span>
+        <span class="tab-label">Especial.</span>
+      </button>
+      <button class="tab-btn" id="tabInsigniasBtn" data-tab="insignias">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>
+        <span class="tab-label">Insígnias</span>
       </button>
       <button class="tab-btn" id="tabEvolucaoBtn" data-tab="evolucao">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18"/><path d="M6 16v-4M11 16V8M16 16v-6M21 4l-5 4-4-3-6 5"/></svg>
@@ -258,6 +281,7 @@
       <button class="tab-btn" id="tabPatrulhaBtn" data-tab="patrulha" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></svg>
         <span class="tab-label">Patrulha</span>
+        <span class="tab-badge" id="patrolBadge" hidden>0</span>
       </button>
     </div>
   </nav>
@@ -288,6 +312,10 @@
         <button class="btn btn-sm" id="accountCodeSave">Entrar</button>
       </div>
     </div>
+    <div class="field">
+      <label>Avisos</label>
+      <button class="btn btn-block btn-ghost" id="notifBtn">🔔 Ativar avisos neste aparelho</button>
+    </div>
     <div class="auth-msg" id="accountMsg" role="status" aria-live="polite"></div>
     <button class="btn btn-block" id="signOutBtn" style="margin-top:12px">Sair da conta</button>
     <div class="danger-zone">
@@ -303,6 +331,57 @@
   <div class="modal-box modal-wide">
     <div id="memberDetail"></div>
     <button class="modal-close" data-close="memberModal">Fechar</button>
+  </div>
+</div>
+
+<!-- Enviar relatório de especialidade/insígnia -->
+<div class="modal-overlay" id="subModal" hidden role="dialog" aria-modal="true" aria-labelledby="subTitle">
+  <div class="modal-box">
+    <div class="eyebrow" id="subKind">Especialidade</div>
+    <div class="modal-title" id="subTitle"></div>
+    <div id="subStatusBox"></div>
+    <div id="subEditBox">
+      <div class="field">
+        <label>Relatório e comprovantes <span class="req">obrigatório</span></label>
+        <label class="file-drop" for="subFiles">
+          <span class="file-drop-ic">📎</span>
+          <span><b>Anexar PDF, fotos ou outros arquivos</b><small>até 10 arquivos · 15 MB cada · fotos grandes são reduzidas</small></span>
+        </label>
+        <input type="file" id="subFiles" multiple hidden>
+        <div id="subFileList"></div>
+      </div>
+      <div class="field">
+        <label for="subDate">Data da conquista</label>
+        <input type="date" id="subDate" class="input">
+      </div>
+      <div class="field">
+        <label for="subReport">Comentário para o monitor (opcional)</label>
+        <textarea class="input" id="subReport" rows="3" maxlength="5000" placeholder="Conte como foi, o que você fez, quem acompanhou…"></textarea>
+      </div>
+      <button class="btn btn-primary btn-block" id="subSend">Enviar para o monitor</button>
+    </div>
+    <div id="subViewBox" hidden></div>
+    <button class="btn btn-block" id="subEditBtn" hidden>✏️ Editar envio</button>
+    <div class="auth-msg" id="subMsg" role="status" aria-live="polite"></div>
+    <button class="btn btn-danger btn-block" id="subCancel" style="margin-top:10px" hidden>Cancelar envio</button>
+    <button class="modal-close" data-close="subModal">Fechar</button>
+  </div>
+</div>
+
+<!-- Monitor: analisar envio -->
+<div class="modal-overlay" id="reviewModal" hidden role="dialog" aria-modal="true">
+  <div class="modal-box modal-wide">
+    <div id="reviewBody"></div>
+    <div class="field">
+      <label for="reviewNote">Comentário (obrigatório para devolver)</label>
+      <textarea class="input" id="reviewNote" rows="3" maxlength="2000" placeholder="Parabéns! / O que falta ajustar…"></textarea>
+    </div>
+    <div class="row-inline">
+      <button class="btn btn-danger" id="reviewReturn" style="flex:1">↩ Devolver</button>
+      <button class="btn btn-primary" id="reviewApprove" style="flex:1">✓ Aprovar</button>
+    </div>
+    <div class="auth-msg" id="reviewMsg" role="status" aria-live="polite"></div>
+    <button class="modal-close" data-close="reviewModal">Fechar</button>
   </div>
 </div>
 

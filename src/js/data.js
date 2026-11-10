@@ -363,11 +363,6 @@ const SPECIALTIES = [
       {id:"sp-lideranca", text:"Liderança e Gestão"},
       {id:"sp-viagens", text:"Viagens"},
       {id:"sp-comunicacoes", text:"Comunicações"}
-    ], insignias:[
-      {id:"in-aprender", text:"Insígnia do Aprender"},
-      {id:"in-mar", text:"Insígnia da Modalidade do Mar (Naval)"},
-      {id:"in-ar", text:"Insígnia da Modalidade do Ar (Aeronauta)"},
-      {id:"in-inovadores", text:"Insígnia Inovadores de Impacto"}
     ]
   },
   { id:"area2", name:"Meio Ambiente", especialidades:[
@@ -378,10 +373,6 @@ const SPECIALTIES = [
       {id:"sp-esportesaventura", text:"Esportes de Aventura"},
       {id:"sp-ecoturismo", text:"Ecoturismo"},
       {id:"sp-habilidadesesc", text:"Habilidades Escoteiras"}
-    ], insignias:[
-      {id:"in-3r", text:"Insígnia Reduzir, Reciclar, Reutilizar"},
-      {id:"in-solar", text:"Insígnia Escoteiros pela Energia Solar"},
-      {id:"in-campeoes", text:"Insígnia Campeões da Natureza"}
     ]
   },
   { id:"area3", name:"Paz e Desenvolvimento", especialidades:[
@@ -395,13 +386,6 @@ const SPECIALTIES = [
       {id:"sp-direitoshumanos", text:"Direitos Humanos"},
       {id:"sp-diversidades", text:"Diversidades"},
       {id:"sp-fecrencas", text:"Fé, Crenças e Diálogo Inter-religioso"}
-    ], insignias:[
-      {id:"in-desafiocom", text:"Insígnia do Desafio Comunitário"},
-      {id:"in-mensageiros", text:"Insígnia Mensageiros da Paz"},
-      {id:"in-mundo", text:"Reconhecimento Escoteiros do Mundo"},
-      {id:"in-lusofonia", text:"Insígnia da Lusofonia"},
-      {id:"in-conesul", text:"Insígnia do Cone Sul"},
-      {id:"in-dialogospaz", text:"Diálogos pela Paz"}
     ]
   },
   { id:"area4", name:"Saúde e Bem-estar", especialidades:[
@@ -412,6 +396,29 @@ const SPECIALTIES = [
       {id:"sp-saudemental", text:"Saúde Mental e Bem-Estar Emocional"},
       {id:"sp-hobbies", text:"Hobbies e Lazer"},
       {id:"sp-saudesexual", text:"Saúde Sexual e Reprodutiva"}
-    ], insignias:[]
+    ]
   }
+];
+
+// Insígnias: área própria, com envio de relatório para o monitor como as especialidades
+const INSIGNIAS = [
+  { id:"ins-area1", name:"Habilidades para a Vida", items:[
+    {id:"in-aprender", text:"Insígnia do Aprender"},
+    {id:"in-mar", text:"Insígnia da Modalidade do Mar (Naval)"},
+    {id:"in-ar", text:"Insígnia da Modalidade do Ar (Aeronauta)"},
+    {id:"in-inovadores", text:"Insígnia Inovadores de Impacto"}
+  ]},
+  { id:"ins-area2", name:"Meio Ambiente", items:[
+    {id:"in-3r", text:"Insígnia Reduzir, Reciclar, Reutilizar"},
+    {id:"in-solar", text:"Insígnia Escoteiros pela Energia Solar"},
+    {id:"in-campeoes", text:"Insígnia Campeões da Natureza"}
+  ]},
+  { id:"ins-area3", name:"Paz e Desenvolvimento", items:[
+    {id:"in-desafiocom", text:"Insígnia do Desafio Comunitário"},
+    {id:"in-mensageiros", text:"Insígnia Mensageiros da Paz"},
+    {id:"in-mundo", text:"Reconhecimento Escoteiros do Mundo"},
+    {id:"in-lusofonia", text:"Insígnia da Lusofonia"},
+    {id:"in-conesul", text:"Insígnia do Cone Sul"},
+    {id:"in-dialogospaz", text:"Diálogos pela Paz"}
+  ]}
 ];

@@ -46,3 +46,19 @@ self.addEventListener("fetch", (event) => {
     }))
   );
 });
+
+// Toque no aviso (envio para analisar / resultado da análise): abre o site na aba certa
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const tab = event.notification.data && event.notification.data.tab;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      const client = list.find((c) => c.url.startsWith(self.registration.scope));
+      if (client) {
+        if (tab) client.postMessage({ tab });
+        return client.focus();
+      }
+      return self.clients.openWindow("./");
+    })
+  );
+});

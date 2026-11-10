@@ -345,3 +345,176 @@ create policy "notas: as próprias" on public.senior_notes
   for all to authenticated
   using (user_id = auth.uid())
   with check (user_id = auth.uid());
+
+-- =====================================================================
+--  Envio de especialidades e insígnias (com relatório) para o monitor
+-- =====================================================================
+--  Para marcar uma especialidade ou insígnia, a pessoa envia o relatório
+--  (PDF, fotos ou outros arquivos). O envio fica "enviada" até o monitor
+--  aprovar ou devolver com um comentário. Os arquivos ficam no Storage,
+--  no bucket privado "relatorios", numa pasta com o id de quem enviou.
+
+create table if not exists public.submissions (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references auth.users(id) on delete cascade,
+  patrol_id    uuid references public.patrols(id) on delete set null,
+  kind         text not null check (kind in ('especialidade', 'insignia')),
+  item_id      text not null check (length(item_id) <= 80),
+  item_date    date,
+  report       text check (length(report) <= 5000),
+  files        jsonb not null default '[]'::jsonb,
+  status       text not null default 'enviada' check (status in ('enviada', 'aprovada', 'devolvida')),
+  review_note  text check (length(review_note) <= 2000),
+  reviewed_by  uuid references auth.users(id) on delete set null,
+  reviewed_at  timestamptz,
+  submitted_at timestamptz not null default now(),
+  unique (user_id, kind, item_id)
+);
+create index if not exists submissions_status_idx on public.submissions(status, submitted_at);
+
+-- Enviar (ou reenviar) uma especialidade/insígnia. Exige pelo menos 1 arquivo.
+-- p_files: [{"path":"<user_id>/...","name":"relatorio.pdf","size":12345,"type":"application/pdf"}]
+create or replace function public.submit_item(
+  p_kind text, p_item_id text, p_item_date date, p_report text, p_files jsonb
+)
+returns public.submissions
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_uid  uuid := auth.uid();
+  v_file jsonb;
+  v_row  public.submissions;
+begin
+  if v_uid is null then raise exception 'nao_autenticado'; end if;
+  if p_kind not in ('especialidade', 'insignia') then raise exception 'tipo_invalido'; end if;
+  if jsonb_typeof(p_files) <> 'array' or jsonb_array_length(p_files) = 0 then
+    raise exception 'relatorio_obrigatorio';
+  end if;
+  if jsonb_array_length(p_files) > 10 then raise exception 'arquivos_demais'; end if;
+  for v_file in select * from jsonb_array_elements(p_files) loop
+    if coalesce(v_file ->> 'path', '') not like v_uid::text || '/%' then
+      raise exception 'arquivo_invalido';
+    end if;
+  end loop;
+
+  insert into public.submissions as s
+    (user_id, patrol_id, kind, item_id, item_date, report, files, status,
+     review_note, reviewed_by, reviewed_at, submitted_at)
+  values
+    (v_uid, public.my_patrol_id(), p_kind, left(p_item_id, 80), p_item_date,
+     left(nullif(trim(coalesce(p_report, '')), ''), 5000), p_files, 'enviada',
+     null, null, null, now())
+  on conflict (user_id, kind, item_id) do update set
+    patrol_id = excluded.patrol_id, item_date = excluded.item_date, report = excluded.report,
+    files = excluded.files, status = 'enviada', review_note = null,
+    reviewed_by = null, reviewed_at = null, submitted_at = now()
+  returning * into v_row;
+  return v_row;
+end $$;
+
+-- Monitor aprova ou devolve (devolver exige comentário)
+create or replace function public.review_submission(p_id uuid, p_approve boolean, p_note text)
+returns public.submissions
+language plpgsql security definer
+set search_path = public
+as $$
+declare v_row public.submissions;
+begin
+  select * into v_row from public.submissions where id = p_id;
+  if not found then raise exception 'envio_nao_encontrado'; end if;
+  if not public.is_monitor_of(v_row.user_id) then raise exception 'apenas_monitor'; end if;
+  if not p_approve and length(trim(coalesce(p_note, ''))) = 0 then
+    raise exception 'comentario_obrigatorio';
+  end if;
+  update public.submissions set
+    status = case when p_approve then 'aprovada' else 'devolvida' end,
+    review_note = left(nullif(trim(coalesce(p_note, '')), ''), 2000),
+    reviewed_by = auth.uid(), reviewed_at = now()
+  where id = p_id
+  returning * into v_row;
+  return v_row;
+end $$;
+
+-- Quem enviou pode cancelar enquanto não foi aprovado. Devolve a lista de arquivos para apagar.
+create or replace function public.cancel_submission(p_kind text, p_item_id text)
+returns jsonb
+language plpgsql security definer
+set search_path = public
+as $$
+declare v_files jsonb;
+begin
+  delete from public.submissions
+   where user_id = auth.uid() and kind = p_kind and item_id = p_item_id and status <> 'aprovada'
+  returning files into v_files;
+  return coalesce(v_files, '[]'::jsonb);
+end $$;
+
+-- O monitor é da patrulha do dono da pasta? (a pasta é o id do usuário, em texto)
+create or replace function public.is_monitor_of_folder(p_folder text)
+returns boolean language sql stable security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.profiles me
+    join public.profiles them on them.patrol_id = me.patrol_id
+    where me.user_id = auth.uid()
+      and me.role = 'monitor'
+      and me.patrol_id is not null
+      and them.user_id::text = p_folder
+  )
+$$;
+
+revoke all on function public.submit_item(text, text, date, text, jsonb)  from public, anon;
+revoke all on function public.review_submission(uuid, boolean, text)       from public, anon;
+revoke all on function public.cancel_submission(text, text)                from public, anon;
+revoke all on function public.is_monitor_of_folder(text)                   from public, anon;
+grant execute on function public.submit_item(text, text, date, text, jsonb) to authenticated;
+grant execute on function public.review_submission(uuid, boolean, text)     to authenticated;
+grant execute on function public.cancel_submission(text, text)              to authenticated;
+grant execute on function public.is_monitor_of_folder(text)                 to authenticated;
+
+revoke all on public.submissions from anon, authenticated;
+grant select on public.submissions to authenticated;   -- alterações só pelas funções acima
+
+alter table public.submissions enable row level security;
+
+drop policy if exists "envios: os próprios e os da patrulha (monitor)" on public.submissions;
+create policy "envios: os próprios e os da patrulha (monitor)" on public.submissions
+  for select to authenticated
+  using (user_id = auth.uid() or public.is_monitor_of(user_id));
+
+-- Avisos em tempo real (o monitor recebe na hora quando chega um envio)
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+     and not exists (select 1 from pg_publication_tables
+                     where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'submissions') then
+    alter publication supabase_realtime add table public.submissions;
+  end if;
+end $$;
+
+-- ---------- Arquivos (Storage) ----------
+-- Bucket privado, até 15 MB por arquivo
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('relatorios', 'relatorios', false, 15728640)
+on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit;
+
+drop policy if exists "relatorios: enviar na própria pasta" on storage.objects;
+create policy "relatorios: enviar na própria pasta" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'relatorios' and (storage.foldername(name))[1] = auth.uid()::text);
+
+drop policy if exists "relatorios: ver os próprios e os da patrulha (monitor)" on storage.objects;
+create policy "relatorios: ver os próprios e os da patrulha (monitor)" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'relatorios' and (
+    (storage.foldername(name))[1] = auth.uid()::text
+    or public.is_monitor_of_folder((storage.foldername(name))[1])
+  ));
+
+drop policy if exists "relatorios: apagar os próprios" on storage.objects;
+create policy "relatorios: apagar os próprios" on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'relatorios' and (storage.foldername(name))[1] = auth.uid()::text);
