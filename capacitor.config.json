@@ -1,6 +1,6 @@
 {
   "appId": "br.progressaosenior.app",
-  "appName": "Progressão Sênior",
+  "appName": "Progressões",
   "webDir": "dist/app",
   "android": {
     "adjustMarginsForEdgeToEdge": "auto",

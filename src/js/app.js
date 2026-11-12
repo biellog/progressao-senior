@@ -1,6 +1,6 @@
 'use strict';
 // =====================================================================
-//  Progressão Escoteira (Ramos Escoteiro, Sênior e Pioneiro) — lógica do app
+//  Progressões (Ramos Escoteiro, Sênior e Pioneiro) — lógica do app
 //  Compartilhado pela versão web e pela versão app (Android).
 //  As diferenças entre as duas ficam em config.js, gerado pelo build.
 // =====================================================================
@@ -1284,7 +1284,7 @@ async function savePdfNative(doc, fileName){
     const { Filesystem, Share } = window.Capacitor.Plugins;
     const base64 = doc.output('datauristring').split(',')[1];
     const res = await Filesystem.writeFile({ path: fileName, data: base64, directory: 'CACHE' });
-    await Share.share({ title: 'Resumo da Progressão Sênior', files: [res.uri], dialogTitle: 'Salvar ou enviar o PDF' });
+    await Share.share({ title: 'Resumo da Progressão — ' + RAMO.name, files: [res.uri], dialogTitle: 'Salvar ou enviar o PDF' });
   }catch(err){
     if(err && /cancel/i.test(String(err.message || err))) return;
     console.error('Erro ao salvar PDF', err);

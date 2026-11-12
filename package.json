@@ -2,7 +2,7 @@
   "name": "progressao-senior",
   "version": "2.0.0",
   "private": true,
-  "description": "Progressão Ramo Sênior — app Android (Capacitor) do checklist de progressão pessoal",
+  "description": "Progressões (Ramos Escoteiro, Sênior e Pioneiro) — app Android (Capacitor) do checklist de progressão pessoal",
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:web": "node scripts/build.mjs web",

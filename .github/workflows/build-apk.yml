@@ -71,7 +71,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.APP_VERSION }}
-          name: Progressão Sênior ${{ env.APP_VERSION }} (app Android)
+          name: Progressões ${{ env.APP_VERSION }} (app Android)
           body: |
             Baixe o arquivo **progressao-senior.apk** abaixo pelo celular Android e abra para instalar.
             Se o Android pedir, permita "instalar apps de fontes desconhecidas" para o navegador ou gerenciador de arquivos.

@@ -1,7 +1,7 @@
 {
-  "name": "Progressão Ramo Sênior",
-  "short_name": "Progressão Sênior",
-  "description": "Checklist de progressão pessoal do Ramo Sênior, com a sua patrulha",
+  "name": "Progressões",
+  "short_name": "Progressões",
+  "description": "Checklist de progressão pessoal dos Ramos Escoteiro, Sênior e Pioneiro, com a sua patrulha",
   "lang": "pt-BR",
   "start_url": "./index.html",
   "scope": "./",
