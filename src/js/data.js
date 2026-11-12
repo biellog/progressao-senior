@@ -1,5 +1,5 @@
 // Conteúdo da Progressão — Ramo Sênior 2026 (eixos, blocos, itens e especialidades)
-const DATA = [
+const DATA_SENIOR = [
   {
     id: "acolhida",
     eixo: true,
@@ -352,7 +352,7 @@ const DATA = [
   }
 ];
 
-const SPECIALTIES = [
+const SPECIALTIES_SENIOR = [
   { id:"area1", name:"Habilidades para a Vida", especialidades:[
       {id:"sp-gastronomia", text:"Gastronomia"},
       {id:"sp-tecnologia", text:"Tecnologia"},
@@ -401,7 +401,7 @@ const SPECIALTIES = [
 ];
 
 // Insígnias: área própria, com envio de relatório para o monitor como as especialidades
-const INSIGNIAS = [
+const INSIGNIAS_SENIOR = [
   { id:"ins-area1", name:"Habilidades para a Vida", items:[
     {id:"in-aprender", text:"Insígnia do Aprender"},
     {id:"in-mar", text:"Insígnia da Modalidade do Mar (Naval)"},

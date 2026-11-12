@@ -15,8 +15,8 @@
 --
 --  Regras de acesso (RLS):
 --    - cada pessoa lê e altera só os próprios dados;
---    - o monitor lê o nome e a progressão de quem é da patrulha dele
---      (as notas continuam privadas);
+--    - o monitor lê o nome e a progressão de quem é da patrulha dele,
+--      e o chefe, de quem é do ramo dele (as notas continuam privadas);
 --    - ninguém muda o próprio papel ou patrulha sem um código válido.
 -- =====================================================================
 
@@ -59,6 +59,29 @@ create table if not exists public.senior_notes (
   primary key (user_id, note_id)
 );
 
+-- ---------- Ramos e chefes ----------
+-- Cada patrulha (ou equipe, no Ramo Pioneiro) pertence a um ramo, e o perfil herda o ramo dela.
+-- Patrulhas criadas antes desta versão ficam como Ramo Sênior.
+alter table public.patrols  add column if not exists ramo text not null default 'senior';
+alter table public.profiles add column if not exists ramo text not null default 'senior';
+
+alter table public.patrols  drop constraint if exists patrols_ramo_check;
+alter table public.patrols  add  constraint patrols_ramo_check  check (ramo in ('escoteiro', 'senior', 'pioneiro'));
+alter table public.profiles drop constraint if exists profiles_ramo_check;
+alter table public.profiles add  constraint profiles_ramo_check check (ramo in ('escoteiro', 'senior', 'pioneiro'));
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add  constraint profiles_role_check check (role in ('membro', 'monitor', 'chefe'));
+create index if not exists profiles_ramo_idx on public.profiles(ramo);
+
+-- Um código de chefe por ramo. Quem cria a conta com ele vira chefe daquele ramo
+-- e acompanha todas as patrulhas do ramo. Para ver os códigos, rode no SQL Editor:
+--   select * from public.chief_codes;
+create table if not exists public.chief_codes (
+  ramo       text primary key check (ramo in ('escoteiro', 'senior', 'pioneiro')),
+  code       text not null unique,
+  created_at timestamptz not null default now()
+);
+
 -- ---------- Funções auxiliares ----------
 
 -- Código aleatório de 6 caracteres, sem letras/números que se confundem (0/O, 1/I/L)
@@ -82,6 +105,30 @@ begin
   return code;
 end $$;
 
+-- Código de chefe: 8 caracteres (nunca coincide com os de patrulha, que têm 6)
+create or replace function public.gen_chief_code()
+returns text language plpgsql volatile
+set search_path = public
+as $$
+declare
+  alphabet constant text := 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  v_code text;
+begin
+  loop
+    v_code := '';
+    for i in 1..8 loop
+      v_code := v_code || substr(alphabet, 1 + floor(random() * length(alphabet))::int, 1);
+    end loop;
+    exit when not exists (select 1 from public.chief_codes c where c.code = v_code);
+  end loop;
+  return v_code;
+end $$;
+
+-- Cria os códigos de chefe que ainda não existem (um por ramo)
+insert into public.chief_codes (ramo, code)
+select r, public.gen_chief_code() from unnest(array['escoteiro', 'senior', 'pioneiro']) as r
+on conflict (ramo) do nothing;
+
 -- Aceita o código digitado com espaços, traços ou minúsculas
 create or replace function public.normalize_code(p text)
 returns text language sql immutable
@@ -100,7 +147,18 @@ as $$
                    from public.profiles where user_id = auth.uid()), false)
 $$;
 
--- O usuário logado é monitor da patrulha de p_user?
+create or replace function public.is_chief()
+returns boolean language sql stable security definer
+set search_path = public
+as $$ select coalesce((select role = 'chefe' from public.profiles where user_id = auth.uid()), false) $$;
+
+create or replace function public.my_ramo()
+returns text language sql stable security definer
+set search_path = public
+as $$ select ramo from public.profiles where user_id = auth.uid() $$;
+
+-- O usuário logado acompanha p_user? Vale para o monitor da patrulha dele
+-- e para o chefe do ramo dele.
 create or replace function public.is_monitor_of(p_user uuid)
 returns boolean language sql stable security definer
 set search_path = public
@@ -108,12 +166,29 @@ as $$
   select exists (
     select 1
     from public.profiles me
-    join public.profiles them on them.patrol_id = me.patrol_id
+    join public.profiles them
+      on (me.role = 'monitor' and me.patrol_id is not null and them.patrol_id = me.patrol_id)
+      or (me.role = 'chefe' and them.ramo = me.ramo)
     where me.user_id = auth.uid()
-      and me.role = 'monitor'
-      and me.patrol_id is not null
       and them.user_id = p_user
   )
+$$;
+
+-- A que um código dá acesso: patrulha (como membro ou monitor) ou chefia de um ramo
+create or replace function public.resolve_code(p_code text)
+returns table (patrol_id uuid, patrol_name text, role text, ramo text)
+language sql stable security definer
+set search_path = public
+as $$
+  select p.id, p.name,
+         case when p.monitor_code = public.normalize_code(p_code) then 'monitor' else 'membro' end,
+         p.ramo
+  from public.patrols p
+  where public.normalize_code(p_code) in (p.member_code, p.monitor_code)
+  union all
+  select null::uuid, null::text, 'chefe', c.ramo
+  from public.chief_codes c
+  where c.code = public.normalize_code(p_code)
 $$;
 
 -- ---------- Conta nova: cria o perfil a partir do código de patrulha ----------
@@ -125,20 +200,16 @@ returns trigger language plpgsql security definer
 set search_path = public
 as $$
 declare
-  v_code   text := public.normalize_code(new.raw_user_meta_data ->> 'patrol_code');
-  v_name   text := left(trim(coalesce(new.raw_user_meta_data ->> 'full_name', '')), 80);
-  v_patrol public.patrols%rowtype;
-  v_role   text;
+  v_name text := left(trim(coalesce(new.raw_user_meta_data ->> 'full_name', '')), 80);
+  v_res  record;
 begin
-  select * into v_patrol from public.patrols
-   where member_code = v_code or monitor_code = v_code;
+  select * into v_res from public.resolve_code(new.raw_user_meta_data ->> 'patrol_code') limit 1;
   if not found then
     raise exception 'codigo_patrulha_invalido'
       using hint = 'Peça o código da patrulha ao seu monitor ou chefe.';
   end if;
-  v_role := case when v_patrol.monitor_code = v_code then 'monitor' else 'membro' end;
-  insert into public.profiles (user_id, full_name, patrol_id, role)
-  values (new.id, v_name, v_patrol.id, v_role)
+  insert into public.profiles (user_id, full_name, patrol_id, role, ramo)
+  values (new.id, v_name, v_res.patrol_id, v_res.role, v_res.ramo)
   on conflict (user_id) do nothing;
   return new;
 end $$;
@@ -150,50 +221,44 @@ create trigger on_auth_user_created
 
 -- ---------- Funções chamadas pelo app (RPC) ----------
 
--- Antes do cadastro: confere o código e devolve o nome da patrulha e o papel
-create or replace function public.check_patrol_code(p_code text)
-returns table (patrol_name text, role text)
+-- Antes do cadastro: confere o código e devolve o nome da patrulha, o papel e o ramo
+drop function if exists public.check_patrol_code(text);
+create function public.check_patrol_code(p_code text)
+returns table (patrol_name text, role text, ramo text)
 language sql stable security definer
 set search_path = public
-as $$
-  select p.name,
-         case when p.monitor_code = public.normalize_code(p_code) then 'monitor' else 'membro' end
-  from public.patrols p
-  where public.normalize_code(p_code) in (p.member_code, p.monitor_code)
-$$;
+as $$ select r.patrol_name, r.role, r.ramo from public.resolve_code(p_code) r limit 1 $$;
 
 -- Perfil de quem está logado, com o nome da patrulha
-create or replace function public.get_my_profile()
-returns table (user_id uuid, full_name text, role text, patrol_id uuid, patrol_name text)
+drop function if exists public.get_my_profile();
+create function public.get_my_profile()
+returns table (user_id uuid, full_name text, role text, patrol_id uuid, patrol_name text, ramo text)
 language sql stable security definer
 set search_path = public
 as $$
-  select pr.user_id, pr.full_name, pr.role, pr.patrol_id, pa.name
+  select pr.user_id, pr.full_name, pr.role, pr.patrol_id, pa.name, pr.ramo
   from public.profiles pr
   left join public.patrols pa on pa.id = pr.patrol_id
   where pr.user_id = auth.uid()
 $$;
 
--- Entrar em (ou trocar de) patrulha com um código
-create or replace function public.join_patrol(p_code text)
-returns table (patrol_name text, role text)
+-- Entrar em (ou trocar de) patrulha com um código. Com um código de chefe, a conta vira chefe do ramo.
+drop function if exists public.join_patrol(text);
+create function public.join_patrol(p_code text)
+returns table (patrol_name text, role text, ramo text)
 language plpgsql security definer
 set search_path = public
 as $$
-declare
-  v_code   text := public.normalize_code(p_code);
-  v_patrol public.patrols%rowtype;
-  v_role   text;
+declare v_res record;
 begin
   if auth.uid() is null then raise exception 'nao_autenticado'; end if;
-  select * into v_patrol from public.patrols
-   where member_code = v_code or monitor_code = v_code;
+  select * into v_res from public.resolve_code(p_code) limit 1;
   if not found then raise exception 'codigo_patrulha_invalido'; end if;
-  v_role := case when v_patrol.monitor_code = v_code then 'monitor' else 'membro' end;
-  insert into public.profiles (user_id, patrol_id, role)
-  values (auth.uid(), v_patrol.id, v_role)
-  on conflict (user_id) do update set patrol_id = excluded.patrol_id, role = excluded.role;
-  return query select v_patrol.name, v_role;
+  insert into public.profiles (user_id, patrol_id, role, ramo)
+  values (auth.uid(), v_res.patrol_id, v_res.role, v_res.ramo)
+  on conflict (user_id) do update
+    set patrol_id = excluded.patrol_id, role = excluded.role, ramo = excluded.ramo;
+  return query select v_res.patrol_name, v_res.role, v_res.ramo;
 end $$;
 
 create or replace function public.set_my_name(p_name text)
@@ -251,9 +316,24 @@ begin
   delete from auth.users where id = auth.uid();
 end $$;
 
--- ---------- Só para quem administra (rodar no SQL Editor) ----------
--- Exemplo:  select * from public.create_patrol('Patrulha Lobo');
-create or replace function public.create_patrol(p_name text)
+-- Só para o chefe: patrulhas do ramo dele, com os códigos
+create or replace function public.get_ramo_patrols()
+returns table (patrol_id uuid, patrol_name text, member_code text, monitor_code text)
+language sql stable security definer
+set search_path = public
+as $$
+  select p.id, p.name, p.member_code, p.monitor_code
+  from public.patrols p
+  where public.is_chief() and p.ramo = public.my_ramo()
+  order by p.name
+$$;
+
+-- ---------- Criar patrulhas ----------
+-- Pelo SQL Editor (quem administra):
+--   select * from public.create_patrol('Lobo', 'senior');      -- ramos: escoteiro, senior, pioneiro
+-- Pelo app: o chefe cria patrulhas do próprio ramo no painel.
+drop function if exists public.create_patrol(text);
+create or replace function public.create_patrol(p_name text, p_ramo text default 'senior')
 returns table (patrol_name text, member_code text, monitor_code text)
 language plpgsql security definer
 set search_path = public
@@ -267,14 +347,33 @@ begin
     v_monitor := public.gen_patrol_code();
     exit when v_monitor <> v_member;
   end loop;
-  insert into public.patrols (name, member_code, monitor_code)
-  values (trim(p_name), v_member, v_monitor);
+  insert into public.patrols (name, member_code, monitor_code, ramo)
+  values (trim(p_name), v_member, v_monitor, p_ramo);
   return query select trim(p_name), v_member, v_monitor;
+end $$;
+
+create or replace function public.chief_create_patrol(p_name text)
+returns table (patrol_name text, member_code text, monitor_code text)
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  if not public.is_chief() then raise exception 'apenas_chefe'; end if;
+  if length(trim(coalesce(p_name, ''))) = 0 then raise exception 'nome_obrigatorio'; end if;
+  return query select * from public.create_patrol(p_name, public.my_ramo());
 end $$;
 
 -- ---------- Permissões ----------
 
-revoke all on function public.create_patrol(text)      from public, anon, authenticated;
+revoke all on function public.create_patrol(text, text) from public, anon, authenticated;
+revoke all on function public.gen_chief_code()         from public, anon, authenticated;
+revoke all on function public.resolve_code(text)       from public, anon, authenticated;
+revoke all on function public.get_ramo_patrols()       from public, anon;
+revoke all on function public.chief_create_patrol(text) from public, anon;
+grant execute on function public.get_ramo_patrols()        to authenticated;
+grant execute on function public.chief_create_patrol(text) to authenticated;
+revoke all on public.chief_codes from anon, authenticated;
+alter table public.chief_codes enable row level security;
 revoke all on function public.gen_patrol_code()        from public, anon, authenticated;
 revoke all on function public.handle_new_user()        from public, anon, authenticated;
 
@@ -296,7 +395,7 @@ grant execute on function public.check_patrol_code(text)    to anon, authenticat
 
 -- Os códigos nunca são lidos direto da tabela, só pelas funções acima
 revoke all on public.patrols from anon, authenticated;
-grant select (id, name, created_at) on public.patrols to authenticated;
+grant select (id, name, ramo, created_at) on public.patrols to authenticated;
 
 revoke all on public.profiles from anon, authenticated;
 grant select on public.profiles to authenticated;
@@ -317,7 +416,7 @@ alter table public.senior_notes    enable row level security;
 drop policy if exists "patrulha: membros veem a sua" on public.patrols;
 create policy "patrulha: membros veem a sua" on public.patrols
   for select to authenticated
-  using (id = public.my_patrol_id());
+  using (id = public.my_patrol_id() or (public.is_chief() and ramo = public.my_ramo()));
 
 drop policy if exists "perfil: o próprio" on public.profiles;
 create policy "perfil: o próprio" on public.profiles
@@ -328,6 +427,11 @@ drop policy if exists "perfil: monitor vê a patrulha" on public.profiles;
 create policy "perfil: monitor vê a patrulha" on public.profiles
   for select to authenticated
   using (public.is_monitor() and patrol_id = public.my_patrol_id());
+
+drop policy if exists "perfil: chefe vê o ramo" on public.profiles;
+create policy "perfil: chefe vê o ramo" on public.profiles
+  for select to authenticated
+  using (public.is_chief() and ramo = public.my_ramo());
 
 drop policy if exists "progresso: o próprio" on public.senior_progress;
 create policy "progresso: o próprio" on public.senior_progress
@@ -450,7 +554,7 @@ begin
   return coalesce(v_files, '[]'::jsonb);
 end $$;
 
--- O monitor é da patrulha do dono da pasta? (a pasta é o id do usuário, em texto)
+-- Quem está logado acompanha o dono da pasta? (a pasta é o id do usuário, em texto)
 create or replace function public.is_monitor_of_folder(p_folder text)
 returns boolean language sql stable security definer
 set search_path = public
@@ -458,10 +562,10 @@ as $$
   select exists (
     select 1
     from public.profiles me
-    join public.profiles them on them.patrol_id = me.patrol_id
+    join public.profiles them
+      on (me.role = 'monitor' and me.patrol_id is not null and them.patrol_id = me.patrol_id)
+      or (me.role = 'chefe' and them.ramo = me.ramo)
     where me.user_id = auth.uid()
-      and me.role = 'monitor'
-      and me.patrol_id is not null
       and them.user_id::text = p_folder
   )
 $$;

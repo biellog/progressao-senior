@@ -3,8 +3,9 @@
 Siga estes passos uma vez. Depois disso, o app e o site passam a usar o banco novo sozinhos.
 
 > **Já tinha rodado o `schema.sql` antes?** Rode o arquivo inteiro de novo (passo 1). Ele não apaga nada e
-> acrescenta o que faltava: os envios de especialidades e insígnias com relatório, o armazenamento dos
-> arquivos (bucket `relatorios`) e os avisos em tempo real para o monitor.
+> acrescenta o que faltava: os três ramos (Escoteiro, Sênior e Pioneiro), os códigos de chefe, os envios de
+> especialidades e insígnias com relatório, o armazenamento dos arquivos (bucket `relatorios`) e os avisos
+> em tempo real. As patrulhas e contas que já existiam continuam como **Ramo Sênior**.
 
 ## 1. Criar o banco
 
@@ -18,26 +19,58 @@ Confira depois de rodar:
 - **Storage:** deve aparecer o bucket **relatorios** (privado). É onde ficam os PDFs e fotos dos relatórios.
 - **Database → Publications → supabase_realtime:** a tabela **submissions** deve estar marcada. É ela que avisa o monitor na hora.
 
-## 2. Criar as patrulhas
+## 2. Códigos de chefe e patrulhas
 
-Ainda no **SQL Editor**, rode uma linha para cada patrulha:
+### Códigos de chefe
+
+O banco cria sozinho um **código de chefe para cada ramo**. Para ver, rode no **SQL Editor**:
 
 ```sql
-select * from public.create_patrol('Lobo');
-select * from public.create_patrol('Águia');
+select * from public.chief_codes;
 ```
 
-Cada linha devolve dois códigos:
+Quem cria a conta em **Login de chefes** com esse código vira chefe daquele ramo: vê todas as patrulhas
+do ramo, analisa os envios e cria patrulhas pelo próprio app. Passe o código só para os chefes.
 
-| coluna | para quem |
-|---|---|
-| `member_code` | todo mundo da patrulha. Quem criar conta com ele entra como **membro**. |
-| `monitor_code` | só o monitor (ou submonitor/chefe). Quem criar conta com ele entra como **monitor** e vê o painel da patrulha. |
-
-Para ver os códigos de novo depois:
+Para trocar um código que vazou (quem já é chefe continua sendo):
 
 ```sql
-select name, member_code, monitor_code from public.patrols order by name;
+update public.chief_codes set code = public.gen_chief_code() where ramo = 'senior';
+```
+
+### Patrulhas
+
+O jeito mais fácil: o **chefe cria as patrulhas no app** (aba Tropa → *Patrulhas do ramo* → Criar) e já vê os códigos lá.
+
+Também dá para criar pelo **SQL Editor**, dizendo o ramo (`escoteiro`, `senior` ou `pioneiro`):
+
+```sql
+select * from public.create_patrol('Lobo', 'senior');
+select * from public.create_patrol('Touro', 'escoteiro');
+select * from public.create_patrol('Equipe Alfa', 'pioneiro');
+```
+
+Cada patrulha tem dois códigos:
+
+| código | para quem |
+|---|---|
+| `member_code` | todo mundo da patrulha. Quem criar conta com ele entra como **membro**. |
+| `monitor_code` | só o monitor (no Pioneiro, o coordenador da equipe). Ele vê o painel da patrulha. |
+
+O ramo da conta vem da patrulha. No cadastro, a pessoa escolhe o ramo na primeira tela e o app só aceita
+o código de uma patrulha daquele ramo.
+
+Para ver tudo de novo depois:
+
+```sql
+select ramo, name, member_code, monitor_code from public.patrols order by ramo, name;
+```
+
+Para mudar o ramo de uma patrulha que já existia (os membros acompanham):
+
+```sql
+update public.patrols  set ramo = 'escoteiro' where name = 'Lobo';
+update public.profiles set ramo = 'escoteiro' where patrol_id = (select id from public.patrols where name = 'Lobo');
 ```
 
 ## 3. Endereços de login
@@ -76,9 +109,10 @@ A chave pública pode ficar visível no repositório: quem protege os dados são
 
 ## 6. Testar
 
-1. Abra o site, toque em **Criar conta** e use o `monitor_code` da sua patrulha.
-2. A aba **Patrulha** aparece na barra de baixo, com o painel do monitor e o código para convidar a galera.
-3. Cada membro cria a conta com o `member_code`.
+1. Abra o site, toque em **Login de chefes** → **Criar conta de chefe** e use o código de chefe do seu ramo.
+2. Na aba **Tropa**, crie uma patrulha. Os códigos dela aparecem na hora.
+3. Saia, escolha o ramo na primeira tela e crie uma conta com o `monitor_code`: a aba **Patrulha** aparece com o painel do monitor.
+4. Cada membro escolhe o ramo e cria a conta com o `member_code`.
 
 ## Tarefas do dia a dia
 

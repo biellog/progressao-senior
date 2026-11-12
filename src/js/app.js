@@ -1,6 +1,6 @@
 'use strict';
 // =====================================================================
-//  Progressão Ramo Sênior — lógica do app
+//  Progressão Escoteira (Ramos Escoteiro, Sênior e Pioneiro) — lógica do app
 //  Compartilhado pela versão web e pela versão app (Android).
 //  As diferenças entre as duas ficam em config.js, gerado pelo build.
 // =====================================================================
@@ -64,7 +64,40 @@ let subs = { especialidade:{}, insignia:{} }; // envios com relatório, por tipo
 let notes = [];          // [{ id, title, body, updated }]
 let specNotesOpen = {};
 let notesSaveTimers = {};
-let openEixos = new Set([DATA[0].id]);
+let openEixos = new Set();
+
+// ---------- Ramo ----------
+// O conteúdo (eixos, especialidades, insígnias, etapas) muda conforme o ramo da conta.
+let RAMO = RAMOS.senior;
+let DATA = [], SPECIALTIES = [], INSIGNIAS = [];
+const RAMO_CHOICE_KEY = 'ramo-escolhido-v1';
+let chosenRamo = null;   // escolhido na primeira tela (fica guardado no aparelho)
+let chiefMode = false;   // entrou pelo botão "Login de chefes"
+try{ const r = localStorage.getItem(RAMO_CHOICE_KEY); if(RAMOS[r]) chosenRamo = r; }catch(err){}
+
+function cap(str){ return str ? str.charAt(0).toUpperCase() + str.slice(1) : ''; }
+function isChief(){ return !!(profile && profile.role === 'chefe'); }
+function isLeader(){ return !!(profile && (profile.role === 'monitor' || profile.role === 'chefe')); }
+
+function setRamo(id){
+  RAMO = RAMOS[id] || RAMOS.senior;
+  DATA = RAMO.data; SPECIALTIES = RAMO.specialties; INSIGNIAS = RAMO.insignias;
+  _textMap = null; _pickItemsCache = null;
+  openEixos = new Set(DATA.length ? [DATA[0].id] : []);
+  applyTheme(RAMO.id);
+  $('appTitle').textContent = RAMO.name;
+  document.querySelectorAll('[data-ramo-fonte]').forEach(el=>{ el.textContent = RAMO.fonte; });
+}
+function applyTheme(id){
+  if(id) document.documentElement.setAttribute('data-ramo', id);
+  else document.documentElement.removeAttribute('data-ramo');
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if(meta) meta.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#150C0E');
+}
+function rememberRamo(id){
+  chosenRamo = id;
+  try{ if(id) localStorage.setItem(RAMO_CHOICE_KEY, id); else localStorage.removeItem(RAMO_CHOICE_KEY); }catch(err){}
+}
 let searchQueryProgressao = '';
 let searchQueryEspecialidades = '';
 let currentTab = 'progressao';
@@ -109,6 +142,9 @@ function parseVarRequired(label){
   return null;
 }
 
+// Quantas ações variáveis o bloco exige (varMin tem prioridade; senão lê o número do rótulo)
+function varRequired(b){ return b.varMin != null ? b.varMin : parseVarRequired(b.varLabel); }
+
 function blocoFixasComplete(b, prog = progress){
   const fixasArr = b.fixas||[];
   const normalItems = fixasArr.filter(i=> !i.tag);
@@ -124,7 +160,7 @@ function blocoFixasComplete(b, prog = progress){
 function blocoComplete(b, prog = progress){
   if(!blocoFixasComplete(b, prog)) return false;
   if(b.ou && isDone(prog, b.ou.id)) return true;
-  const req = parseVarRequired(b.varLabel);
+  const req = varRequired(b);
   const varDone = (b.variaveis||[]).filter(i=> isDone(prog, i.id)).length;
   if(req != null) return varDone >= req;
   return (b.fixas||[]).length > 0; // bloco só com ações fixas
@@ -161,28 +197,28 @@ function blocoMissingDetail(b, prog = progress){
     }
   }
   if(!(b.ou && isDone(prog, b.ou.id))){
-    const req = parseVarRequired(b.varLabel);
+    const req = varRequired(b);
     const varDone = (b.variaveis||[]).filter(i=> isDone(prog, i.id)).length;
     if(req != null){
       const missing = Math.max(0, req - varDone);
-      if(missing > 0) parts.push(missing + (missing !== 1 ? ' ações variáveis' : ' ação variável') + ' (ou a especialidade "OU")');
+      if(missing > 0) parts.push(missing + (missing !== 1 ? ' ações variáveis' : ' ação variável') + (b.ou ? ' (ou a opção "OU")' : ''));
     }
   }
   return parts.join(' + ');
 }
 
-function nextStageInfo(blocksDone){
-  if(blocksDone < 6) return { need:6-blocksDone, label:'Conquista', icon:'🥉' };
-  if(blocksDone < 12) return { need:12-blocksDone, label:'Azimute', icon:'🧭' };
-  if(blocksDone < 18) return { need:18-blocksDone, label:'Escoteiro da Pátria', icon:'🏆' };
-  return null;
+// Em que etapa a pessoa está (índice em RAMO.stages)
+function stageIndex(blocksDone, prog = progress){
+  const st = RAMO.stages;
+  let i = 0;
+  st.forEach((s, k)=>{ if(blocksDone >= s.at) i = k; });
+  // No Sênior a última etapa também exige os itens finais (Desafio do Azimute + Avaliação)
+  if(i === st.length - 1 && i > 0 && RAMO.finalExtra && !RAMO.finalExtra.every(id=> isDone(prog, id))) i--;
+  return i;
 }
-
 function currentStage(blocksDone, prog = progress){
-  if(blocksDone >= 18 && isDone(prog, 'patria-azimute') && isDone(prog, 'patria-avaliacao')) return { icon:'🏆', label:'Escoteiro da Pátria' };
-  if(blocksDone >= 12) return { icon:'🧭', label:'Azimute' };
-  if(blocksDone >= 6) return { icon:'🥉', label:'Conquista' };
-  return { icon:'🧗', label:'Escalada' };
+  const s = RAMO.stages[stageIndex(blocksDone, prog)];
+  return { icon: s.icon, label: s.label };
 }
 
 function allItemIds(){
@@ -220,6 +256,7 @@ function itemRow(item, isOu){
   let modTag = '';
   if(item.tag === 'mar') modTag = '<span class="mod-tag mod-mar" title="Modalidade do Mar">⛵ MAR</span>';
   if(item.tag === 'ar') modTag = '<span class="mod-tag mod-ar" title="Modalidade do Ar">✈️ AR</span>';
+  if(item.tag === 'esp') modTag = '<span class="mod-tag mod-esp" title="Soma como uma ação variável">🎖 ESPECIALIDADE</span>';
   return `
     <div class="item ${checked?'checked':''} ${isOu?'ou-item':''}" data-id="${item.id}">
       <div class="chk" data-action="toggle" data-id="${item.id}" role="checkbox" aria-checked="${checked}" tabindex="0">${CHECK_SVG}</div>
@@ -364,42 +401,43 @@ function updateHeader(){
   $('ringFill').style.strokeDashoffset = circumference - (pct/100)*circumference;
 
   const { done: blocksDone, total: blocksTotal } = countBlocksCompleted();
-  const stage = currentStage(blocksDone);
-  const stages = [
-    { icon:'🧗', label:'Escalada' },
-    { icon:'🥉', label:'Conquista' },
-    { icon:'🧭', label:'Azimute' },
-    { icon:'🏆', label:'Pátria' }
-  ];
-  const activeLabel = stage.label === 'Escoteiro da Pátria' ? 'Pátria' : stage.label;
+  const active = stageIndex(blocksDone);
+  const stages = RAMO.stages;
   $('stageRow').innerHTML = stages.map((s,i)=>
-    `<span class="stage-pill ${s.label===activeLabel?'active':''}">${s.icon} ${s.label}</span>${i<stages.length-1?'<span class="stage-sep">›</span>':''}`
+    `<span class="stage-pill ${i===active?'active':''}">${s.icon} ${s.short || s.label}</span>${i<stages.length-1?'<span class="stage-sep">›</span>':''}`
   ).join('') + `<div class="stage-note">${blocksDone} de ${blocksTotal} blocos concluídos (fixas + variáveis/OU de cada bloco)</div>`;
 
-  renderMissingCard(blocksDone);
+  renderMissingCard(blocksDone, blocksTotal);
 }
 
-function renderMissingCard(blocksDone){
+function renderMissingCard(blocksDone, blocksTotal){
   const el = $('missingCard');
-  const azimuteDone = isDone(progress, 'patria-azimute');
-  const avaliacaoDone = isDone(progress, 'patria-avaliacao');
-  if(blocksDone >= 18 && azimuteDone && avaliacaoDone){
-    el.innerHTML = '<div class="missing-done">🏆 Você já cumpriu tudo — parabéns, Escoteiro da Pátria!</div>';
-    return;
-  }
+  const stages = RAMO.stages;
+  const idx = stageIndex(blocksDone);
+  const next = stages[idx + 1];
   let pct, label, icon, note;
-  if(blocksDone >= 18){
-    const extra = (azimuteDone?1:0) + (avaliacaoDone?1:0);
-    pct = Math.round(extra/2*100);
-    label = 'Escoteiro da Pátria'; icon = '🏆';
-    note = extra + '/2 (Desafio do Azimute + Avaliação)';
-  } else {
-    const next = nextStageInfo(blocksDone);
-    const prevThreshold = next.label==='Conquista' ? 0 : (next.label==='Azimute' ? 6 : 12);
-    const threshold = blocksDone + next.need;
-    pct = Math.round(((blocksDone - prevThreshold) / (threshold - prevThreshold)) * 100);
+  if(next && blocksDone < next.at){
+    const from = stages[idx].at;
+    pct = Math.round(((blocksDone - from) / (next.at - from)) * 100);
     label = next.label; icon = next.icon;
-    note = next.need + ' bloco' + (next.need!==1?'s':'') + ' para chegar lá';
+    const need = next.at - blocksDone;
+    note = need + ' bloco' + (need!==1?'s':'') + ' para chegar lá';
+  } else if(next){
+    // blocos suficientes, faltam os itens finais da última etapa
+    const extras = RAMO.finalExtra || [];
+    const got = extras.filter(id=> isDone(progress, id)).length;
+    pct = Math.round(got / extras.length * 100);
+    label = next.label; icon = next.icon;
+    note = got + '/' + extras.length + (RAMO.finalExtraNote ? ' (' + RAMO.finalExtraNote + ')' : '');
+  } else if(blocksDone < blocksTotal){
+    const from = stages[idx].at;
+    pct = Math.round(((blocksDone - from) / (blocksTotal - from)) * 100);
+    label = 'concluir todos os blocos'; icon = '🏁';
+    const need = blocksTotal - blocksDone;
+    note = need + ' bloco' + (need!==1?'s':'') + ' para completar';
+  } else {
+    el.innerHTML = `<div class="missing-done">🏆 Você já cumpriu tudo — parabéns${RAMO.finalExtra ? ', ' + stages[idx].label : ''}!</div>`;
+    return;
   }
   el.innerHTML = `
     <div class="missing-title">Rumo a ${icon} ${label}</div>
@@ -797,7 +835,8 @@ const TABS = {
   patrulha:       ['tabPatrulhaBtn','viewPatrulha']
 };
 function showTab(name){
-  if(name === 'patrulha' && !(profile && profile.role === 'monitor')) name = 'progressao';
+  if(name === 'patrulha' && !isLeader()) name = 'progressao';
+  if(isChief() && name !== 'patrulha' && name !== 'notas') name = 'patrulha';
   currentTab = name;
   $('appScreen').setAttribute('data-tab', name);
   Object.keys(TABS).forEach(k=>{
@@ -1175,9 +1214,9 @@ function exportPDF(){
   }
 
   doc.setFont('helvetica','bold'); doc.setFontSize(20); doc.setTextColor(120,30,45);
-  doc.text('Progressão — Ramo Sênior', marginX, y); y += 22;
+  doc.text('Progressão — ' + RAMO.name, marginX, y); y += 22;
   doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(110,110,110);
-  const who = [profile && profile.full_name, profile && profile.patrol_name ? 'Patrulha ' + profile.patrol_name : ''].filter(Boolean).join('  ·  ');
+  const who = [profile && profile.full_name, profile && profile.patrol_name ? cap(RAMO.grupo) + ' ' + profile.patrol_name : ''].filter(Boolean).join('  ·  ');
   if(who){ doc.text(who, marginX, y); y += 14; }
   doc.text('Resumo gerado em ' + new Date().toLocaleDateString('pt-BR'), marginX, y); y += 10;
   sectionRule();
@@ -1285,6 +1324,8 @@ function authErrorPt(err){
   const code = (err && err.code) || '';
   if(m.includes('codigo_patrulha_invalido') || m.includes('database error saving new user')) return 'Código de patrulha inválido. Confira com o seu monitor ou chefe.';
   if(m.includes('apenas_monitor')) return 'Só o monitor da patrulha pode fazer isso.';
+  if(m.includes('apenas_chefe')) return 'Só o chefe do ramo pode fazer isso.';
+  if(m.includes('nome_obrigatorio')) return 'Digite o nome da patrulha.';
   if(m.includes('nao_pode_remover_a_si_mesmo')) return 'Você não pode remover a si mesmo.';
   if(m.includes('invalid login credentials')) return 'E-mail ou senha incorretos.';
   if(m.includes('user already registered') || code === 'user_already_exists') return 'Este e-mail já tem conta. Toque em "Entrar".';
@@ -1298,7 +1339,7 @@ function authErrorPt(err){
 }
 
 function showScreen(name){
-  ['bootScreen','authScreen','patrolScreen','appScreen'].forEach(id=>{ $(id).hidden = id !== name + 'Screen'; });
+  ['bootScreen','ramoScreen','authScreen','patrolScreen','appScreen'].forEach(id=>{ $(id).hidden = id !== name + 'Screen'; });
   window.scrollTo({ top:0 });
 }
 
@@ -1307,14 +1348,21 @@ function setAuthMode(mode){
   const up = mode === 'up';
   $('authTabIn').classList.toggle('active', !up);
   $('authTabUp').classList.toggle('active', up);
-  $('authSub').textContent = up
-    ? 'Crie sua conta com o código da sua patrulha.'
-    : 'Entre com a sua conta para acompanhar sua progressão.';
+  $('authEyebrow').textContent = chiefMode ? 'Área de chefes' : 'Progressão pessoal';
+  $('authTitle').textContent = chiefMode ? 'Login de chefes' : RAMO.name;
+  $('authSub').textContent = chiefMode
+    ? (up ? 'Crie sua conta de chefe com o código de chefe do seu ramo.' : 'Entre com a sua conta de chefe para acompanhar as patrulhas do ramo.')
+    : (up ? 'Crie sua conta com o código da sua ' + RAMO.grupo + '.' : 'Entre com a sua conta para acompanhar sua progressão.');
+  $('authCodeLabel').textContent = chiefMode ? 'Código de chefe' : 'Código da ' + RAMO.grupo;
+  $('authCode').placeholder = chiefMode ? 'ABCD2345' : 'ABC123';
+  $('authTabUp').textContent = chiefMode ? 'Criar conta de chefe' : 'Criar conta';
+  $('authBack').textContent = chiefMode ? '← Voltar' : '← Trocar de ramo';
+  if(normCode($('authCode').value).length < 4) resetCodeHint();
   $('signupFields').hidden = !up;
   $('pw2Field').hidden = !up;
   $('pwStrengthBox').hidden = !up;
   $('authForgot').hidden = up;
-  $('authSubmit').textContent = up ? 'Criar conta' : 'Entrar';
+  $('authSubmit').textContent = up ? (chiefMode ? 'Criar conta de chefe' : 'Criar conta') : 'Entrar';
   $('authPassword').setAttribute('autocomplete', up ? 'new-password' : 'current-password');
   setAuthMsg('');
   updatePwStrength();
@@ -1334,18 +1382,55 @@ function setAuthBusy(busy, label){
   authBusy = busy;
   $('authSubmit').disabled = busy;
   ['authTabIn','authTabUp','authForgot'].forEach(id=>{ $(id).disabled = busy; });
-  $('authSubmit').textContent = (busy && label) ? label : (authMode === 'up' ? 'Criar conta' : 'Entrar');
+  $('authSubmit').textContent = (busy && label) ? label : (authMode === 'up' ? (chiefMode ? 'Criar conta de chefe' : 'Criar conta') : 'Entrar');
 }
 
+function codeHintDefault(){
+  return chiefMode ? 'Peça o código de chefe a quem administra o app no seu grupo.' : 'Peça o código ao ' + RAMO.lider + ' ou ao chefe da sua ' + RAMO.secao + '.';
+}
+function resetCodeHint(){
+  codeCheck = { code:'', valid:false };
+  $('authCodeHint').className = 'field-hint';
+  $('authCodeHint').textContent = codeHintDefault();
+}
+
+// Primeira tela: escolher o ramo (ou entrar como chefe)
+function showRamoScreen(){
+  chiefMode = false;
+  applyTheme(null);
+  showScreen('ramo');
+}
 function showAuth(){
-  showScreen('auth');
   if(!sb){
+    showScreen('auth');
     $('authConfigMissing').hidden = false;
     $('authForm').hidden = true;
+    $('authBack').hidden = true;
     return;
   }
+  if(!chiefMode && !chosenRamo){ showRamoScreen(); return; }
+  if(chiefMode) applyTheme(null); else setRamo(chosenRamo);
+  showScreen('auth');
   setAuthMode(authMode);
 }
+document.querySelectorAll('[data-ramo-pick]').forEach(b=> b.addEventListener('click', ()=>{
+  chiefMode = false;
+  rememberRamo(b.getAttribute('data-ramo-pick'));
+  authMode = 'in';
+  showAuth();
+}));
+$('chiefLoginBtn').addEventListener('click', ()=>{
+  chiefMode = true;
+  authMode = 'in';
+  showAuth();
+});
+$('authBack').addEventListener('click', ()=>{
+  if(authBusy) return;
+  rememberRamo(null);
+  $('authCode').value = '';
+  setAuthMsg('');
+  showRamoScreen();
+});
 
 // Confere o código da patrulha enquanto a pessoa digita
 let codeTimer = null;
@@ -1354,8 +1439,8 @@ async function checkCode(raw){
   const hint = $('authCodeHint');
   hint.className = 'field-hint';
   if(code.length < 4){
-    codeCheck = { code, valid:false };
-    hint.textContent = 'Peça o código ao monitor ou ao chefe da sua tropa.';
+    resetCodeHint();
+    codeCheck.code = code;
     return codeCheck;
   }
   hint.textContent = 'Conferindo…';
@@ -1364,16 +1449,20 @@ async function checkCode(raw){
     if(normCode($('authCode').value) !== code) return codeCheck; // a pessoa já digitou outra coisa
     if(error) throw error;
     const row = (data || [])[0];
-    if(row){
-      codeCheck = { code, valid:true, patrol:row.patrol_name, role:row.role };
-      hint.className = 'field-hint ' + (row.role === 'monitor' ? 'monitor' : 'ok');
-      hint.textContent = row.role === 'monitor'
-        ? '✓ Patrulha ' + row.patrol_name + ' — você entrará como monitor'
-        : '✓ Patrulha ' + row.patrol_name;
+    const bad = (msg)=>{ codeCheck = { code, valid:false, msg }; hint.className = 'field-hint error'; hint.textContent = msg; };
+    if(!row){
+      bad('Código não encontrado. Confira as letras e números.');
+    } else if(chiefMode && row.role !== 'chefe'){
+      bad('Este não é um código de chefe. Para entrar numa patrulha, volte e escolha o seu ramo.');
+    } else if(!chiefMode && row.role === 'chefe'){
+      bad('Este é um código de chefe. Volte e toque em "Login de chefes".');
+    } else if(!chiefMode && row.ramo !== chosenRamo){
+      bad('Este código é do ' + RAMOS[row.ramo].name + '. Volte e escolha esse ramo.');
     } else {
-      codeCheck = { code, valid:false };
-      hint.className = 'field-hint error';
-      hint.textContent = 'Código não encontrado. Confira as letras e números.';
+      codeCheck = { code, valid:true, patrol:row.patrol_name, role:row.role, ramo:row.ramo };
+      hint.className = 'field-hint ' + (row.role === 'membro' ? 'ok' : 'monitor');
+      hint.textContent = row.role === 'chefe' ? '✓ Chefe do ' + RAMOS[row.ramo].name
+        : '✓ ' + cap(RAMOS[row.ramo].grupo) + ' ' + row.patrol_name + (row.role === 'monitor' ? ' — você entrará como ' + RAMOS[row.ramo].lider : '');
     }
   }catch(err){
     codeCheck = { code, valid:false, error:true };
@@ -1417,7 +1506,7 @@ async function submitAuth(e){
   const password2 = $('authPassword2').value;
   if(name.length < 2){ setAuthMsg('Digite o seu nome.', 'error'); $('authName').focus(); return; }
   const code = normCode($('authCode').value);
-  if(!code){ setAuthMsg('Digite o código da patrulha.', 'error'); $('authCode').focus(); return; }
+  if(!code){ setAuthMsg(chiefMode ? 'Digite o código de chefe.' : 'Digite o código da ' + RAMO.grupo + '.', 'error'); $('authCode').focus(); return; }
   if(!validEmail(email)){ setAuthMsg('Digite um e-mail válido.', 'error'); return; }
   if(password.length < 8){ setAuthMsg('A senha precisa ter pelo menos 8 caracteres.', 'error'); return; }
   if(password !== password2){ setAuthMsg('As senhas não coincidem.', 'error'); return; }
@@ -1425,7 +1514,7 @@ async function submitAuth(e){
   setAuthBusy(true, 'Conferindo código…'); setAuthMsg('');
   try{
     const check = (codeCheck.code === code && codeCheck.valid) ? codeCheck : await checkCode(code);
-    if(!check.valid){ setAuthMsg(check.error ? 'Não consegui conferir o código. Verifique a internet.' : 'Código de patrulha inválido. Confira com o seu monitor ou chefe.', 'error'); return; }
+    if(!check.valid){ setAuthMsg(check.error ? 'Não consegui conferir o código. Verifique a internet.' : (check.msg || 'Código inválido. Confira com o seu monitor ou chefe.'), 'error'); return; }
     setAuthBusy(true, 'Criando conta…');
     const { data, error } = await sb.auth.signUp({
       email, password,
@@ -1434,7 +1523,7 @@ async function submitAuth(e){
     if(error){ setAuthMsg(authErrorPt(error), 'error'); return; }
     if(data.session){
       await enterAs(data.user);
-      showToast('Conta criada ✓ Bem-vindo à patrulha ' + check.patrol + '!');
+      showToast(check.role === 'chefe' ? 'Conta de chefe criada ✓' : 'Conta criada ✓ Bem-vindo à ' + RAMOS[check.ramo].grupo + ' ' + check.patrol + '!');
     } else if(data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0){
       setAuthMode('in');
       setAuthMsg('Este e-mail já tem conta. Digite sua senha e toque em Entrar.', 'info');
@@ -1519,7 +1608,13 @@ async function enterAs(user){
     let p = await fetchProfile();
     if(p === undefined) p = readJSON(PROFILE_KEY, null); // offline: usa o último perfil conhecido
     profile = p;
-    if(!profile || !profile.patrol_id){
+    if(profile){
+      if(!RAMOS[profile.ramo]) profile.ramo = 'senior';
+      setRamo(profile.ramo);
+      rememberRamo(profile.ramo);
+    }
+    chiefMode = false;
+    if(!profile || (!profile.patrol_id && profile.role !== 'chefe')){
       showScreen('patrol');
       $('patrolCode').value = '';
       setMsgEl('patrolError', profile ? 'Você não está em nenhuma patrulha no momento.' : '', 'info');
@@ -1534,7 +1629,12 @@ async function enterAs(user){
 function showApp(){
   showScreen('app');
   updateAccountUI();
-  $('tabPatrulhaBtn').hidden = profile.role !== 'monitor';
+  const chief = isChief();
+  $('appScreen').setAttribute('data-role', profile.role);
+  ['tabProgressaoBtn','tabEspecialidadesBtn','tabInsigniasBtn','tabEvolucaoBtn'].forEach(id=>{ $(id).hidden = chief; });
+  $('tabPatrulhaBtn').hidden = !isLeader();
+  $('tabPatrulhaBtn').querySelector('.tab-label').textContent = cap(chief ? RAMO.secao : RAMO.grupo);
+  if(chief && currentTab !== 'notas') currentTab = 'patrulha';
   render();
   renderSpecialidades();
   renderNotes();
@@ -1549,10 +1649,10 @@ function updateAccountUI(){
   const name = (profile && profile.full_name) || (currentUser && currentUser.email) || '';
   const isMon = profile && profile.role === 'monitor';
   $('accountAvatar').textContent = initials(name);
-  $('accountAvatar').classList.toggle('monitor', !!isMon);
+  $('accountAvatar').classList.toggle('monitor', isLeader());
   $('accountName').textContent = firstName(name) || 'Conta';
-  $('headerEyebrow').textContent = profile && profile.patrol_name
-    ? 'Patrulha ' + profile.patrol_name + (isMon ? ' · Monitor' : '')
+  $('headerEyebrow').textContent = isChief() ? 'Chefe · ' + cap(RAMO.secao)
+    : profile && profile.patrol_name ? cap(RAMO.grupo) + ' ' + profile.patrol_name + (isMon ? ' · ' + cap(RAMO.lider) : '')
     : 'Progressão pessoal';
 }
 
@@ -1561,13 +1661,12 @@ function resetState(){
   progress = {}; specProgress = {}; notes = []; subs = { especialidade:{}, insignia:{} };
   stopRealtime(); pendingSubs = []; updatePatrolBadge();
   patrolData = null; currentTab = 'progressao'; monitorCodeVisible = false;
-  authMode = 'in';
+  authMode = 'in'; chiefMode = false; patrolFilter = '';
+  $('appScreen').removeAttribute('data-role');
   ['authName','authCode','authEmail','authPassword','authPassword2','searchProgressao','searchEspecialidades'].forEach(id=>{ $(id).value = ''; });
   searchQueryProgressao = ''; searchQueryEspecialidades = ''; searchQueryInsignias = '';
   $('searchInsignias').value = '';
-  codeCheck = { code:'', valid:false };
-  $('authCodeHint').className = 'field-hint';
-  $('authCodeHint').textContent = 'Peça o código ao monitor ou ao chefe da sua tropa.';
+  resetCodeHint();
 }
 
 async function signOutUser(){
@@ -1598,12 +1697,14 @@ $('patrolSignOut').addEventListener('click', signOutUser);
 $('accountBtn').addEventListener('click', ()=>{
   const name = (profile && profile.full_name) || '';
   $('accountAvatarLg').textContent = initials(name || (currentUser && currentUser.email));
-  $('accountAvatarLg').classList.toggle('monitor', profile && profile.role === 'monitor');
+  $('accountAvatarLg').classList.toggle('monitor', isLeader());
   $('accountTitle').textContent = name || 'Sua conta';
   $('accountEmail').textContent = currentUser ? currentUser.email : '';
-  $('accountPatrol').innerHTML = profile && profile.patrol_name
-    ? escapeHtml(profile.patrol_name) + ' <span class="badge ' + (profile.role === 'monitor' ? 'badge-monitor' : '') + '">' + (profile.role === 'monitor' ? 'Monitor' : 'Membro') + '</span>'
-    : '—';
+  $('accountPatrol').innerHTML = isChief()
+    ? escapeHtml(RAMO.name) + ' <span class="badge badge-monitor">Chefe</span>'
+    : profile && profile.patrol_name
+      ? escapeHtml(profile.patrol_name) + ' · ' + escapeHtml(RAMO.name) + ' <span class="badge ' + (profile.role === 'monitor' ? 'badge-monitor' : '') + '">' + (profile.role === 'monitor' ? cap(RAMO.lider) : 'Membro') + '</span>'
+      : '—';
   $('accountNameInput').value = name;
   $('accountCodeInput').value = '';
   setMsgEl('accountMsg', '');
@@ -1642,7 +1743,7 @@ $('accountCodeSave').addEventListener('click', async (e)=>{
     closeModal('accountModal');
     patrolData = null;
     await enterAs(currentUser);
-    showToast('Agora você está na patrulha ' + (row.patrol_name || '') + ' ✓');
+    showToast(row.role === 'chefe' ? 'Agora você é chefe do ' + RAMOS[row.ramo].name + ' ✓' : 'Agora você está na ' + RAMOS[row.ramo].grupo + ' ' + (row.patrol_name || '') + ' ✓');
   }catch(err){ setMsgEl('accountMsg', authErrorPt(err), 'error'); }
 });
 
@@ -1810,14 +1911,17 @@ function memberSummary(m){
 }
 
 async function loadPatrol(force){
-  if(!sb || !profile || profile.role !== 'monitor') return;
+  if(!sb || !isLeader()) return;
   if(patrolData && !force && Date.now() - patrolData.loadedAt < 60000){ renderPatrol(); return; }
   if(!patrolData) $('memberList').innerHTML = '<div class="loading">Carregando a patrulha…</div>';
   $('patrolRefresh').disabled = true;
   try{
+    const chief = isChief();
+    const cols = 'user_id, full_name, role, patrol_id, created_at';
     const [codesRes, profRes] = await Promise.all([
-      sb.rpc('get_patrol_codes'),
-      sb.from('profiles').select('user_id, full_name, role, created_at').eq('patrol_id', profile.patrol_id)
+      chief ? sb.rpc('get_ramo_patrols') : sb.rpc('get_patrol_codes'),
+      chief ? sb.from('profiles').select(cols).eq('ramo', profile.ramo).neq('role', 'chefe')
+            : sb.from('profiles').select(cols).eq('patrol_id', profile.patrol_id)
     ]);
     if(codesRes.error) throw codesRes.error;
     if(profRes.error) throw profRes.error;
@@ -1832,7 +1936,10 @@ async function loadPatrol(force){
         .in('user_id', ids).order('submitted_at'))
     ]) : [[], []];
     const byUser = {};
-    people.forEach(p=>{ byUser[p.user_id] = { id:p.user_id, name:p.full_name || 'Sem nome', role:p.role, isMe: p.user_id === currentUser.id, joined:p.created_at, prog:{}, subs:{ especialidade:{}, insignia:{} } }; });
+    const patrols = chief ? (codesRes.data || []) : null;
+    const patrolNames = {};
+    (patrols || []).forEach(p=>{ patrolNames[p.patrol_id] = p.patrol_name; });
+    people.forEach(p=>{ byUser[p.user_id] = { id:p.user_id, name:p.full_name || 'Sem nome', role:p.role, isMe: p.user_id === currentUser.id, joined:p.created_at, patrolId:p.patrol_id, patrolName: patrolNames[p.patrol_id] || '', prog:{}, subs:{ especialidade:{}, insignia:{} } }; });
     rows.forEach(r=>{
       const m = byUser[r.user_id];
       if(m) m.prog[r.item_id] = { checked:true, date: r.item_date || '' };
@@ -1845,7 +1952,7 @@ async function loadPatrol(force){
     updatePatrolBadge();
     const members = Object.values(byUser);
     members.forEach(m=> m.sum = memberSummary(m));
-    patrolData = { codes: (codesRes.data || [])[0] || null, members, loadedAt: Date.now() };
+    patrolData = { codes: chief ? null : ((codesRes.data || [])[0] || null), patrols, members, loadedAt: Date.now() };
     renderPatrol();
   }catch(err){
     console.error(err);
@@ -1856,22 +1963,53 @@ async function loadPatrol(force){
   }
 }
 
+let patrolFilter = '';   // chefe: id da patrulha escolhida no filtro ('' = todas)
+
 function renderPatrol(){
   if(!patrolData) return;
-  const { codes, members } = patrolData;
-  const name = (codes && codes.patrol_name) || profile.patrol_name || '';
-  $('patrolTitle').textContent = 'Patrulha ' + name;
+  const { codes, patrols } = patrolData;
+  const chief = isChief();
+  const G = RAMO.grupo;
+  $('patrolEyebrow').textContent = chief ? 'Painel do chefe' : 'Painel do ' + RAMO.lider;
+  $('inviteCard').hidden = chief;
+  $('patrolsCard').hidden = !chief;
+  $('patrolFilter').hidden = !chief;
+
+  let members = patrolData.members;
+  if(chief){
+    if(patrolFilter && !patrols.some(p=> p.patrol_id === patrolFilter)) patrolFilter = '';
+    $('patrolFilter').innerHTML = '<option value="">Todas</option>' +
+      patrols.map(p=> `<option value="${p.patrol_id}" ${p.patrol_id===patrolFilter?'selected':''}>${escapeHtml(p.patrol_name)}</option>`).join('');
+    if(patrolFilter) members = members.filter(m=> m.patrolId === patrolFilter);
+    $('patrolTitle').textContent = RAMO.name;
+    $('patrolsCard').querySelector('.card-title').textContent = cap(G) + 's do ramo';
+    $('newPatrolName').placeholder = 'Nome da nova ' + G;
+    $('patrolsList').innerHTML = patrols.length ? patrols.map(p=>{
+      const count = patrolData.members.filter(m=> m.patrolId === p.patrol_id).length;
+      return `<div class="patrol-line">
+        <div class="patrol-line-name">${escapeHtml(p.patrol_name)}<small>${count} ${count===1?'pessoa':'pessoas'}</small></div>
+        <div class="patrol-line-codes">
+          <span class="mini-code">membros<b>${escapeHtml(p.member_code)}</b></span>
+          <span class="mini-code ${monitorCodeVisible?'':'masked'}">${RAMO.lider}<b>${monitorCodeVisible ? escapeHtml(p.monitor_code) : '••••••'}</b></span>
+        </div>
+      </div>`;
+    }).join('') : `<div class="pick-hint" style="text-align:left;padding:2px">Nenhuma ${G} ainda. Crie a primeira abaixo.</div>`;
+    $('toggleMonitorCodes').textContent = monitorCodeVisible ? 'Ocultar códigos de ' + RAMO.lider : 'Mostrar códigos de ' + RAMO.lider;
+  } else {
+    const name = (codes && codes.patrol_name) || profile.patrol_name || '';
+    $('patrolTitle').textContent = cap(G) + ' ' + name;
+    $('memberCode').textContent = codes ? codes.member_code : '—';
+    $('monitorCode').textContent = codes && monitorCodeVisible ? codes.monitor_code : '••••••';
+    $('monitorCode').classList.toggle('masked', !monitorCodeVisible);
+    $('toggleMonitorCode').textContent = monitorCodeVisible ? 'Ocultar' : 'Mostrar';
+  }
   const n = members.length;
-  $('patrolSubtitle').textContent = n + (n === 1 ? ' pessoa' : ' pessoas') + ' na patrulha · atualizado às ' +
+  $('patrolSubtitle').textContent = n + (n === 1 ? ' pessoa' : ' pessoas') +
+    (chief ? (patrolFilter ? ' na ' + G : ' em ' + patrols.length + ' ' + G + (patrols.length===1?'':'s')) : ' na ' + G) + ' · atualizado às ' +
     new Date(patrolData.loadedAt).toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
 
-  // Códigos
-  $('memberCode').textContent = codes ? codes.member_code : '—';
-  $('monitorCode').textContent = codes && monitorCodeVisible ? codes.monitor_code : '••••••';
-  $('monitorCode').classList.toggle('masked', !monitorCodeVisible);
-  $('toggleMonitorCode').textContent = monitorCodeVisible ? 'Ocultar' : 'Mostrar';
-
   // Resumo
+  const blocksTotal = countBlocksCompleted({}).total;
   const avgBlocks = n ? members.reduce((s,m)=> s + m.sum.blocks, 0) / n : 0;
   const totalSpecs = members.reduce((s,m)=> s + m.sum.specs + m.sum.insigs, 0);
   const active = members.filter(m=> m.sum.last && daysSince(m.sum.last) <= 30).length;
@@ -1879,7 +2017,7 @@ function renderPatrol(){
   members.forEach(m=>{ stageCount[m.sum.stage.label] = (stageCount[m.sum.stage.label]||0) + 1; });
   const topStage = Object.entries(stageCount).sort((a,b)=> b[1]-a[1])[0];
   $('patrolStats').innerHTML =
-    `<div class="stat"><div class="n">${avgBlocks.toFixed(1).replace('.', ',')}</div><div class="l">média de blocos (de 18)</div></div>` +
+    `<div class="stat"><div class="n">${avgBlocks.toFixed(1).replace('.', ',')}</div><div class="l">média de blocos (de ${blocksTotal})</div></div>` +
     `<div class="stat"><div class="n">${totalSpecs}</div><div class="l">especialidades e insígnias aprovadas</div></div>` +
     `<div class="stat"><div class="n">${active}/${n}</div><div class="l">ativos nos últimos 30 dias</div></div>` +
     `<div class="stat"><div class="n" style="font-size:22px;padding-top:4px">${topStage ? escapeHtml(topStage[0]) : '—'}</div><div class="l">etapa mais comum</div></div>`;
@@ -1894,12 +2032,10 @@ function renderPatrol(){
     if(sort === 'idle') return (a.sum.last||'').localeCompare(b.sum.last||'');
     return b.sum.blocks - a.sum.blocks || b.sum.items - a.sum.items;
   });
-  if(n <= 1){
-    $('memberList').innerHTML = list.map(memberCard).join('') +
-      '<div class="empty-state">Ninguém mais entrou na patrulha ainda.<br>Compartilhe o código de membros acima para convidar a galera.</div>';
-    return;
-  }
-  $('memberList').innerHTML = list.map(memberCard).join('');
+  let empty = '';
+  if(chief && !n) empty = `<div class="empty-state">Ninguém por aqui ainda.<br>Crie as ${G}s acima e passe os códigos para os ${RAMO.lider === 'coordenador' ? 'coordenadores' : RAMO.lider + 'es'} e membros.</div>`;
+  if(!chief && n <= 1) empty = `<div class="empty-state">Ninguém mais entrou na ${G} ainda.<br>Compartilhe o código de membros acima para convidar a galera.</div>`;
+  $('memberList').innerHTML = list.map(memberCard).join('') + empty;
 }
 
 function lastLabel(last){
@@ -1920,8 +2056,9 @@ function memberCard(m){
       <span class="member-main">
         <span class="member-top">
           <span class="member-name">${escapeHtml(m.name)}</span>
-          ${m.role==='monitor' ? '<span class="badge badge-monitor">Monitor</span>' : ''}
+          ${m.role==='monitor' ? '<span class="badge badge-monitor">' + cap(RAMO.lider) + '</span>' : ''}
           ${m.isMe ? '<span class="badge badge-me">Você</span>' : ''}
+          ${isChief() ? '<span class="badge badge-patrol">' + escapeHtml(m.patrolName || 'sem ' + RAMO.grupo) + '</span>' : ''}
         </span>
         <span class="member-meta">
           <span>${s.stage.icon} <b>${s.stage.label}</b></span>
@@ -1941,6 +2078,21 @@ $('memberList').addEventListener('click', (e)=>{
   if(b) openMemberDetail(b.getAttribute('data-member'));
 });
 $('memberSort').addEventListener('change', renderPatrol);
+$('patrolFilter').addEventListener('change', (e)=>{ patrolFilter = e.target.value; renderPatrol(); });
+$('toggleMonitorCodes').addEventListener('click', ()=>{ monitorCodeVisible = !monitorCodeVisible; renderPatrol(); });
+$('newPatrolBtn').addEventListener('click', async ()=>{
+  const name = $('newPatrolName').value.trim();
+  if(!name){ showToast('Digite o nome da ' + RAMO.grupo); $('newPatrolName').focus(); return; }
+  $('newPatrolBtn').disabled = true;
+  try{
+    const { error } = await sb.rpc('chief_create_patrol', { p_name: name });
+    if(error) throw error;
+    $('newPatrolName').value = '';
+    showToast(cap(RAMO.grupo) + ' ' + name + ' criada ✓');
+    await loadPatrol(true);
+  }catch(err){ showToast(authErrorPt(err)); }
+  finally{ $('newPatrolBtn').disabled = false; }
+});
 $('patrolRefresh').addEventListener('click', ()=> loadPatrol(true));
 
 function openMemberDetail(id){
@@ -1985,7 +2137,7 @@ function openMemberDetail(id){
       <span class="avatar lg ${m.role==='monitor'?'monitor':''}">${escapeHtml(initials(m.name))}</span>
       <div class="who">
         <b>${escapeHtml(m.name)}</b>
-        <span>${m.role==='monitor' ? 'Monitor' : 'Membro'} · ${s.stage.icon} ${s.stage.label} · última atividade: ${lastLabel(s.last)}</span>
+        <span>${m.role==='monitor' ? cap(RAMO.lider) : 'Membro'}${isChief() && m.patrolName ? ' · ' + escapeHtml(m.patrolName) : ''} · ${s.stage.icon} ${s.stage.label} · última atividade: ${lastLabel(s.last)}</span>
       </div>
     </div>
     <div class="evo-stats">
@@ -2018,7 +2170,7 @@ function openMemberDetail(id){
 function inviteText(){
   const c = patrolData && patrolData.codes;
   if(!c) return '';
-  return 'Entre na Patrulha ' + c.patrol_name + ' no app Progressão Ramo Sênior!\n' +
+  return 'Entre na ' + cap(RAMO.grupo) + ' ' + c.patrol_name + ' no app de Progressão do ' + RAMO.name + '!\n' +
     'Crie sua conta com o código: ' + c.member_code +
     (PUBLIC_SITE_URL ? '\n' + PUBLIC_SITE_URL : '');
 }
@@ -2069,7 +2221,7 @@ function updatePatrolBadge(){
   const n = pendingSubs.length;
   const b = $('patrolBadge');
   b.textContent = n > 99 ? '99+' : String(n);
-  b.hidden = !n || !(profile && profile.role === 'monitor');
+  b.hidden = !n || !isLeader();
 }
 
 function findPatrolSub(id){
@@ -2237,7 +2389,7 @@ async function notify(title, body, tab){
 
 // Monitor: novos envios desde a última vez
 async function refreshPending(announce){
-  if(!sb || !currentUser || !profile || profile.role !== 'monitor') return;
+  if(!sb || !currentUser || !isLeader()) return;
   try{
     const { data, error } = await sb.from('submissions')
       .select('id, user_id, kind, item_id, submitted_at').eq('status', 'enviada').order('submitted_at');
@@ -2285,7 +2437,7 @@ function startRealtime(){
       if(!currentUser || currentUser.id !== uid) return;
       const row = (payload && payload.new && payload.new.id) ? payload.new : null;
       if(row && row.user_id === uid) setTimeout(()=> fetchOwnSubs(true), 0);
-      if(profile && profile.role === 'monitor') setTimeout(()=>{
+      if(isLeader()) setTimeout(()=>{
         refreshPending(true);
         if(currentTab === 'patrulha') loadPatrol(true);
       }, 0);
@@ -2299,7 +2451,7 @@ function stopRealtime(){
 
 // Ao voltar para o app (ou a cada 2 minutos com ele aberto), confere se há novidades
 function checkForUpdates(){
-  if(!currentUser || !profile || !profile.patrol_id || document.hidden) return;
+  if(!currentUser || !profile || !(profile.patrol_id || isChief()) || document.hidden) return;
   refreshPending(true);
   fetchOwnSubs(true);
 }
@@ -2311,6 +2463,7 @@ setInterval(checkForUpdates, 120000);
 //  Início
 // =====================================================================
 async function boot(){
+  setRamo(chosenRamo || 'senior');
   if(!sb){ showAuth(); return; }
   sb.auth.onAuthStateChange((event)=>{
     // Não chamar o Supabase aqui dentro (pode travar); só reagir
